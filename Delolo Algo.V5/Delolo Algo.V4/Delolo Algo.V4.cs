@@ -7,19 +7,29 @@ using cAlgo.API.Internals;
 namespace cAlgo.Robots
 {
     // ============================================================
-    //  Multi-Indicator Scalper v5.0
-    //  Fixes vs v4.8:
-    //  [FIX-1] Dynamic Score: additiv statt multiplikativ
-    //          ADX-Bonus wird als additiver Score-Punkt addiert,
-    //          nicht mehr als Faktor -> verhindert Signal-Inflation
-    //  [FIX-2] SwapThresholdCheck: Verlustpositionen werden nur
-    //          geschlossen wenn Swap den Verlust signifikant
-    //          verschlimmert (nicht pauschal alle losing)
-    //  [FIX-3] Volume Cap 3% entfernt, MaxMarginUsagePercent
-    //          ist die einzige Volumen-Obergrenze
-    //  [FIX-4] TP1+TP2 Prozent Validierung in OnStart()
-    //  [FIX-5] Multi-Position Guard: alle Bot-Positionen werden
-    //          managed, nicht nur positions[0]
+    //  Multi-Indicator Scalper v5.2
+    //  Fixes vs v5.1:
+    //  [FIX-1] SwapThresholdCheck: pnl==0 Guard (Division /0)
+    //  [FIX-2] ManageOpenPositionsFull: null-Guard + Trailing
+    //          ohne Partial TPs korrekt aktiviert
+    //  [FIX-3] ExecuteTrade: trailingActive=true bei Start
+    //          wenn EnablePartialTPs=false
+    //  [FIX-4] IsSwapProtectionImminent: SwapProtectionBuffer
+    //          als konfigurierbarer Parameter (default 30min)
+    //  [FIX-5] CalculateMaxVolumeFromMargin: robustere Binary
+    //          Search mit step-basiertem Abbruch (30 Iter.)
+    //  Alle Fixes aus v5.1/v5.0/v4.9 enthalten
+    //  [FIX-1] ApplyTrailingStop: pos.Pips <= 0 Guard, kein
+    //          Trailing auf Verlustpositionen mehr moeglich
+    //  [FIX-2] GetAccruedSwap: pos.Swap statt Schaetzung,
+    //          korrekte Einheit (Kontowährung) fuer Swap-Check
+    //  [FIX-3] CheckBreakEven: funktioniert jetzt auch ohne
+    //          EnablePartialTPs (_tp1Price immer in ExecuteTrade)
+    //  [FIX-4] ResetDailyTracking: tradesOpenedToday=1 bei
+    //          Overnight-Position, verhindert falschen Zaehler
+    //  [FIX-5] CalculateRiskMultiplier: Normierung gegen
+    //          Basis-Score ohne ADX-Bonus
+    //  Alle Fixes aus v5.0/v4.9 enthalten
     // ============================================================
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
     public class MultiIndicatorScalper : Robot
@@ -58,6 +68,9 @@ namespace cAlgo.Robots
 
         [Parameter("Hard Close: Losing Only", DefaultValue = false)]
         public bool HardCloseLosingOnly { get; set; }
+
+        [Parameter("Swap Protection Entry Buffer (min)", DefaultValue = 30, MinValue = 5, MaxValue = 120)]
+        public int SwapProtectionBuffer { get; set; }
 
         [Parameter("Enable Weekend Protection", DefaultValue = true)]
         public bool EnableWeekendProtection { get; set; }
@@ -471,7 +484,7 @@ namespace cAlgo.Robots
 
             newsTimes = BuildNewsTimes();
 
-            Print("=== Multi-Indicator Scalper v5.0 ===");
+            Print("=== Multi-Indicator Scalper v5.2 ===");
             Print($"Balance: {Account.Balance:F2} {Account.Asset.Name}");
             Print($"Session UTC: {StartHour:D2}:{StartMinute:D2} - {EndHour:D2}:{EndMinute:D2}");
             Print($"Score Min: {MinScoreToTrade}/{maxScore}");
@@ -503,7 +516,7 @@ namespace cAlgo.Robots
             hardCloseExecutedToday    = false;
 
             ResetDailyTracking();
-            Print("Bot v5.0 ready.");
+            Print("Bot v5.2 ready.");
         }
 
         protected override void OnBar()
@@ -560,7 +573,7 @@ namespace cAlgo.Robots
         {
             PrintDailySummary();
             PrintLifetimeStats();
-            Print($"Bot v5.0 stopped. Final Balance: {Account.Balance:F2}");
+            Print($"Bot v5.2 stopped. Final Balance: {Account.Balance:F2}");
         }
 
         protected override void OnError(Error error)
@@ -871,7 +884,6 @@ namespace cAlgo.Robots
 
         private void ResetDailyTracking()
         {
-            tradesOpenedToday         = 0;
             dailyStartBalance         = Account.Balance;
             highestBalanceToday       = Account.Balance;
             lastTradeDate             = Server.Time.Date;
@@ -881,10 +893,17 @@ namespace cAlgo.Robots
             bool hasOpenPosition = Positions.FindAll(BotLabel, SymbolName).Length > 0;
             if (!hasOpenPosition)
             {
+                tradesOpenedToday = 0;
                 managedPositionId = null;
                 tp1Hit = false; tp2Hit = false;
                 trailingActive = false; breakEvenSet = false;
                 _tp1Price = 0; _tp2Price = 0; _slDistance = 0;
+            }
+            else
+            {
+                // Overnight-Trade offen: Zaehler auf 1 setzen damit MaxDailyTrades korrekt bleibt
+                tradesOpenedToday = 1;
+                Print("Overnight position on new day: tradesOpenedToday set to 1.");
             }
             lastCandlePattern = "None";
         }
@@ -954,25 +973,23 @@ namespace cAlgo.Robots
             foreach (var pos in positions)
             {
                 double pnl  = pos.NetProfit;
-                double swap = EstimateNextSwap(pos);
+                double swap = GetAccruedSwap(pos);
 
-                // Positiver Swap ist kein Problem - niemals schliessen
+                // Positiver Swap: kein Problem
                 if (swap >= 0) continue;
+                // pnl == 0: Division durch null vermeiden, kein Handlungsbedarf
+                if (Math.Abs(pnl) < 0.01) continue;
 
                 double swapCost = Math.Abs(swap);
 
                 if (pnl < 0)
                 {
-                    // Verlustposition: nur schliessen wenn negativer Swap den Verlust
-                    // signifikant verschlimmert (Swap >= SwapThresholdPercent des Verlustes)
                     double ratio = (swapCost / Math.Abs(pnl)) * 100.0;
                     if (ratio >= SwapThresholdPercent)
                         ClosePositionWithReason(pos, $"Swap {ratio:F1}% of loss [{swap:F2}] (threshold: {SwapThresholdPercent}%)");
                 }
                 else if (pnl > 0)
                 {
-                    // Gewinnposition: nur schliessen wenn negativer Swap den Gewinn
-                    // signifikant aufzehrt
                     double ratio = (swapCost / pnl) * 100.0;
                     if (ratio >= SwapThresholdPercent)
                         ClosePositionWithReason(pos, $"Swap {ratio:F1}% of profit [{swap:F2}] (threshold: {SwapThresholdPercent}%)");
@@ -980,12 +997,11 @@ namespace cAlgo.Robots
             }
         }
 
-        private double EstimateNextSwap(Position pos)
+        private double GetAccruedSwap(Position pos)
         {
-            double lots = Symbol.VolumeInUnitsToQuantity(pos.VolumeInUnits);
-            double rate = pos.TradeType == TradeType.Buy ? Symbol.SwapLong : Symbol.SwapShort;
-            double mult = Server.Time.DayOfWeek == DayOfWeek.Wednesday ? 3.0 : 1.0;
-            return rate * lots * mult;
+            // pos.Swap: bereits aufgelaufener Swap in Kontowährung
+            // korrekte Einheit fuer Vergleich mit pos.NetProfit
+            return pos.Swap;
         }
 
         private void CloseAllPositionsWithReason(Position[] positions, string reason)
@@ -1034,7 +1050,7 @@ namespace cAlgo.Robots
         private bool IsSwapProtectionImminent()
         {
             var  now    = Server.Time;
-            int  buffer = 30;
+            int  buffer = SwapProtectionBuffer;
             bool isFri  = now.DayOfWeek == DayOfWeek.Friday;
             bool isWed  = now.DayOfWeek == DayOfWeek.Wednesday;
 
@@ -1057,8 +1073,12 @@ namespace cAlgo.Robots
         private double CalculateRiskMultiplier(int score, int minScore, int maxScore)
         {
             if (!EnableScoreSizing) return 1.0;
-            if (maxScore <= minScore) return RiskMultiplierMin;
-            double t = Math.Max(0.0, Math.Min(1.0, (double)(score - minScore) / (maxScore - minScore)));
+            // Normierung gegen Basis-Score ohne ADX-Bonus: ADX-Bonus ist marktabhaengig
+            // und nicht immer erreichbar. Verhindert stille Sizing-Reduktion in Range-Maerkten.
+            int normMax     = maxScore - (EnableDynamicScore ? ScoreAdxTrend : 0);
+            int cappedScore = Math.Min(score, normMax);
+            if (normMax <= minScore) return RiskMultiplierMin;
+            double t = Math.Max(0.0, Math.Min(1.0, (double)(cappedScore - minScore) / (normMax - minScore)));
             return RiskMultiplierMin + t * (RiskMultiplierMax - RiskMultiplierMin);
         }
 
@@ -1387,10 +1407,13 @@ namespace cAlgo.Robots
             managedPositionId = posId;
             entryPrice        = pos.EntryPrice;
             tp1Hit = false; tp2Hit = false;
-            trailingActive = false; breakEvenSet = false;
+            // trailingActive direkt setzen wenn Partial TPs deaktiviert,
+            // da tp1Hit sonst nie true wird und Trailing nie startet
+            trailingActive = !EnablePartialTPs && EnableTrailingStop;
+            breakEvenSet   = false;
 
             double lots    = Symbol.VolumeInUnitsToQuantity(vol);
-            double estSwap = EstimateNextSwap(pos);
+            double estSwap = GetAccruedSwap(pos);
 
             Print($"TRADE #{tradesOpenedToday} {tradeType} Score:{signalScore}/{GetMaxPossibleScore()} Pat:{candlePattern}");
             Print($"  Entry:{pos.EntryPrice:F5} SL:{slPrice:F5} TP1:{tp1Price:F5} TP2:{tp2Price:F5} TP3:{tp3Price:F5}");
@@ -1419,18 +1442,23 @@ namespace cAlgo.Robots
         private double CalculateMaxVolumeFromMargin(double maxPct, TradeType tradeType)
         {
             double allowed = Account.FreeMargin * (maxPct / 100.0);
+            double step    = Symbol.VolumeInUnitsStep;
             double minVol  = Symbol.VolumeInUnitsMin;
             double maxVol  = Symbol.VolumeInUnitsMax;
             double optimal = minVol;
-            for (int i = 0; i < 20; i++)
+
+            // Robuste Konvergenz: Abbruch wenn Suchraum <= 1 Step
+            // verhindert Endlosschleife bei grossem VolumeInUnitsStep (z.B. Indices)
+            for (int i = 0; i < 30; i++)
             {
-                double test   = Symbol.NormalizeVolumeInUnits((minVol + maxVol) / 2.0, RoundingMode.Down);
-                double margin = Symbol.GetEstimatedMargin(tradeType, test);
-                if (margin <= allowed) { optimal = test; minVol = test; }
-                else maxVol = test;
-                if (Math.Abs(maxVol - minVol) < Symbol.VolumeInUnitsStep) break;
+                if (maxVol - minVol < step) break;
+                double mid    = Symbol.NormalizeVolumeInUnits((minVol + maxVol) / 2.0, RoundingMode.Down);
+                double margin = Symbol.GetEstimatedMargin(tradeType, mid);
+                if (margin <= allowed) { optimal = mid; minVol = mid + step; }
+                else                   { maxVol  = mid - step; }
+                if (minVol > maxVol) break;
             }
-            return optimal;
+            return Math.Max(optimal, Symbol.VolumeInUnitsMin);
         }
 
         // ==================== POSITION MANAGEMENT ====================
@@ -1451,17 +1479,21 @@ namespace cAlgo.Robots
 
             foreach (var pos in positions)
             {
+                // Guard: Position koennte zwischen OnTick-Swap-Close und OnBar bereits weg sein
+                if (pos == null) continue;
+
                 bool isPrimary = (managedPositionId.HasValue && managedPositionId.Value == pos.Id);
 
                 if (isPrimary)
                 {
-                    if (EnablePartialTPs)                     CheckPartialClose(pos);
-                    if (EnableBreakEven)                      CheckBreakEven(pos);
-                    if (EnableTrailingStop && trailingActive) ApplyTrailingStop(pos);
+                    if (EnablePartialTPs)  CheckPartialClose(pos);
+                    if (EnableBreakEven)   CheckBreakEven(pos);
+                    // Trailing: aktiv wenn explizit aktiviert ODER wenn Partial TPs deaktiviert
+                    bool trailReady = trailingActive || !EnablePartialTPs;
+                    if (EnableTrailingStop && trailReady) ApplyTrailingStop(pos);
                 }
                 else
                 {
-                    // Nicht-primäre Positionen erhalten zumindest Trailing Stop Schutz
                     if (EnableTrailingStop) ApplyTrailingStop(pos);
                 }
             }
@@ -1512,7 +1544,8 @@ namespace cAlgo.Robots
         private void CheckBreakEven(Position pos)
         {
             if (breakEvenSet) return;
-
+            // _tp1Price wird in ExecuteTrade immer gesetzt (unabhaengig von EnablePartialTPs)
+            // Break-Even funktioniert daher auch wenn Partial TPs deaktiviert sind
             bool tp1PriceReached = _tp1Price > 0 && (
                 pos.TradeType == TradeType.Buy
                     ? Symbol.Bid >= _tp1Price
@@ -1564,8 +1597,9 @@ namespace cAlgo.Robots
 
         private void ApplyTrailingStop(Position pos)
         {
+            if (pos.Pips <= 0) return;
             double atrVal     = atr.Result.Last(1);
-            double profitPips = Math.Abs(pos.Pips);
+            double profitPips = pos.Pips;
             if (profitPips < (TrailingStartMultiplier * atrVal) / Symbol.PipSize) return;
 
             double dist = TrailingDistanceMultiplier * atrVal;
