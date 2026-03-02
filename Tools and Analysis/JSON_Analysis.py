@@ -1,506 +1,342 @@
-from __future__ import annotations
-
-import argparse
-import json
-import os
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Tuple
-from collections import Counter, defaultdict
-
-
-# -----------------------------
-# Parsing helpers
-# -----------------------------
-def _to_int(v: Any) -> Optional[int]:
-    if v is None:
-        return None
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return None
-
-
-def _to_float(v: Any) -> Optional[float]:
-    if v is None:
-        return None
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
-
-
-def _to_str(v: Any) -> Optional[str]:
-    if v is None:
-        return None
-    s = str(v)
-    s = s.strip()
-    return s if s else None
-
-
-def _to_dt_utc_from_ms(ms: Any) -> Optional[datetime]:
-    if ms is None:
-        return None
-    try:
-        # cTrader-like logs often store ms since epoch
-        return datetime.fromtimestamp(float(ms) / 1000.0, tz=timezone.utc)
-    except (TypeError, ValueError, OSError):
-        return None
-
-
-def _to_dt_utc_from_iso(s: Any) -> Optional[datetime]:
-    if s is None:
-        return None
-    try:
-        st = str(s).strip()
-        if not st:
-            return None
-        # Support "Z" suffix
-        if st.endswith("Z"):
-            st = st[:-1] + "+00:00"
-        dt = datetime.fromisoformat(st)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None
-
-
-def _fmt_dt(dt: Optional[datetime]) -> str:
-    if not dt:
-        return ""
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
-
-
-def _event_key(raw: Dict[str, Any]) -> str:
-    # unify typical keys
-    for k in ("event", "eventName", "name", "type", "message"):
-        if k in raw and raw[k] is not None:
-            s = _to_str(raw[k])
-            if s:
-                return s
-    return "UNKNOWN"
-
-
-def _contains_any(s: str, needles: Iterable[str]) -> bool:
-    sl = s.lower()
-    return any(n.lower() in sl for n in needles)
-
-
-# -----------------------------
-# Normalization
-# -----------------------------
-def normalize_event(raw: Dict[str, Any]) -> Dict[str, Any]:
-    # Supports multiple possible schemas (camelCase/snake_case)
-    def g(*keys: str) -> Any:
-        for k in keys:
-            if k in raw:
-                return raw[k]
-        return None
-
-    # time: prefer ms fields; fallback to ISO string
-    dt = _to_dt_utc_from_ms(g("time", "timestamp", "timeMs", "time_ms", "ts"))
-    if dt is None:
-        dt = _to_dt_utc_from_iso(g("timeIso", "time_iso", "datetime", "dateTime", "date_time"))
-
-    return {
-        "raw": raw,
-        "event": _event_key(raw),
-        "time": dt,
-        "position_id": _to_int(g("positionId", "position_id", "positionID", "pid", "PID")),
-        "order_id": _to_int(g("orderId", "order_id")),
-        "serial": _to_int(g("serial")),
-        "side": _to_str(g("side", "type", "tradeType", "trade_type")),
-
-        # prices
-        "entry_price": _to_float(g("entryPrice", "entry_price", "openPrice", "open_price")),
-        "close_price": _to_float(g("closePrice", "close_price")),
-
-        # risk/targets
-        "sl": _to_float(g("sl", "stopLoss", "stop_loss")),
-        "tp": _to_float(g("tp", "takeProfit", "take_profit")),
-
-        # size
-        "volume": _to_int(g("volume", "volumeInUnits", "volume_in_units", "quantityUnits", "quantity_units")),
-        "quantity": _to_float(g("quantity", "lots", "lot")),
-
-        # PnL fields (net first, then gross)
-        "net_profit": _to_float(g("netProfit", "net_profit", "netPnl", "net_pnl", "profit", "pnl", "pl", "PnL")),
-        "gross_profit": _to_float(g("grossProfit", "gross_profit")),
-
-        # account
-        "balance": _to_float(g("balance", "accountBalance", "account_balance")),
-        "equity": _to_float(g("equity", "accountEquity", "account_equity")),
-        "pips": _to_float(g("pips")),
-    }
-
-
-# -----------------------------
-# Trade aggregation per PID
-# -----------------------------
-@dataclass
-class PosAgg:
-    pid: int
-    pnl: float = 0.0
-    pnl_events: int = 0
-
-    sl_hits: int = 0
-    tp_hits: int = 0
-
-    sl_changes: int = 0
-    tp_changes: int = 0
-    vol_changes: int = 0
-
-    last_sl: Optional[float] = None
-    last_tp: Optional[float] = None
-    last_vol: Optional[int] = None
-
-    open_time: Optional[datetime] = None
-    close_time: Optional[datetime] = None  # last "closing-ish" time
-
-    close_event: Optional[str] = None
-
-    # store a few last-known fields (optional diagnostics)
-    last_balance: Optional[float] = None
-    last_equity: Optional[float] = None
-
-
-def is_sl_hit(event_name: str) -> bool:
-    return _contains_any(event_name, ["stop-loss-zugriff", "stop loss", "stop-loss"])
-
-
-def is_tp_hit(event_name: str) -> bool:
-    return _contains_any(event_name, ["take-profit-zugriff", "take profit", "take-profit"])
-
-
-def is_position_created(event_name: str) -> bool:
-    return _contains_any(event_name, ["position erstellen", "position created", "created"])
-
-
-def is_position_closed_like(event_name: str) -> bool:
-    # include explicit closes + SL/TP hits
-    return (
-        _contains_any(event_name, ["position geschlossen", "position closed", "closed"])
-        or is_sl_hit(event_name)
-        or is_tp_hit(event_name)
-    )
-
-
-def realized_pnl_from_event(e: Dict[str, Any]) -> Optional[float]:
-    # Prefer net profit; fallback to gross
-    if e["net_profit"] is not None:
-        return float(e["net_profit"])
-    if e["gross_profit"] is not None:
-        return float(e["gross_profit"])
-    return None
-
-
-def aggregate(events: List[Dict[str, Any]]) -> Tuple[
-    Dict[int, PosAgg],
-    List[Tuple[datetime, float]],  # (time, balance) series
-    Counter,  # event counts
-    int, int, Optional[datetime], Optional[datetime]
-]:
-    by_pid: Dict[int, PosAgg] = {}
-    event_counts: Counter = Counter()
-    balance_series: List[Tuple[datetime, float]] = []
-
-    pids: List[int] = []
-    t_min: Optional[datetime] = None
-    t_max: Optional[datetime] = None
-
-    # sort by time (keep unknown times at end but stable)
-    def sort_key(x: Dict[str, Any]) -> Tuple[int, float]:
-        dt = x["time"]
-        if dt is None:
-            return (1, 0.0)
-        return (0, dt.timestamp())
-
-    events_sorted = sorted(events, key=sort_key)
-
-    for e in events_sorted:
-        name = e["event"] or "UNKNOWN"
-        event_counts[name] += 1
-
-        dt = e["time"]
-        if dt is not None:
-            if t_min is None or dt < t_min:
-                t_min = dt
-            if t_max is None or dt > t_max:
-                t_max = dt
-
-        pid = e["position_id"]
-        if pid is not None:
-            pids.append(pid)
-            if pid not in by_pid:
-                by_pid[pid] = PosAgg(pid=pid)
-            agg = by_pid[pid]
-
-            # open_time heuristic
-            if is_position_created(name) and dt is not None:
-                if agg.open_time is None or dt < agg.open_time:
-                    agg.open_time = dt
-            elif agg.open_time is None and dt is not None:
-                agg.open_time = dt
-
-            # SL/TP hit counters (per event; in your sample this is ~1 per PID)
-            if is_sl_hit(name):
-                agg.sl_hits += 1
-                if dt is not None:
-                    agg.close_time = dt
-                    agg.close_event = name
-            if is_tp_hit(name):
-                agg.tp_hits += 1
-                if dt is not None:
-                    agg.close_time = dt
-                    agg.close_event = name
-
-            # Update "close_time" on explicit close
-            if is_position_closed_like(name) and dt is not None:
-                if agg.close_time is None or dt > agg.close_time:
-                    agg.close_time = dt
-                    agg.close_event = name
-
-            # Change counters as proxies (count actual value changes, not event-name counts)
-            if e["sl"] is not None:
-                if agg.last_sl is None:
-                    agg.last_sl = e["sl"]
-                else:
-                    if float(e["sl"]) != float(agg.last_sl):
-                        agg.sl_changes += 1
-                        agg.last_sl = e["sl"]
-
-            if e["tp"] is not None:
-                if agg.last_tp is None:
-                    agg.last_tp = e["tp"]
-                else:
-                    if float(e["tp"]) != float(agg.last_tp):
-                        agg.tp_changes += 1
-                        agg.last_tp = e["tp"]
-
-            if e["volume"] is not None:
-                if agg.last_vol is None:
-                    agg.last_vol = e["volume"]
-                else:
-                    if int(e["volume"]) != int(agg.last_vol):
-                        agg.vol_changes += 1
-                        agg.last_vol = e["volume"]
-
-            # Realized pnl aggregation (captures partial closes if your exporter emits pnl on those events)
-            rp = realized_pnl_from_event(e)
-            if rp is not None:
-                agg.pnl += rp
-                agg.pnl_events += 1
-                if dt is not None:
-                    # treat as close-ish moment (partial closes included)
-                    if agg.close_time is None or dt > agg.close_time:
-                        agg.close_time = dt
-                        agg.close_event = name
-
-            # last known account values (optional)
-            if e["balance"] is not None:
-                agg.last_balance = e["balance"]
-            if e["equity"] is not None:
-                agg.last_equity = e["equity"]
-
-        # global balance series for DD + final balance
-        if dt is not None and e["balance"] is not None:
-            balance_series.append((dt, float(e["balance"])))
-
-    pid_min = min(pids) if pids else 0
-    pid_max = max(pids) if pids else 0
-    return by_pid, balance_series, event_counts, pid_min, pid_max, t_min, t_max
-
-
-# -----------------------------
-# Stats
-# -----------------------------
-def compute_max_dd(balance_series: List[Tuple[datetime, float]]) -> float:
-    if not balance_series:
-        return 0.0
-    # series assumed chronological
-    peak = balance_series[0][1]
-    max_dd = 0.0
-    for _, bal in balance_series:
-        if bal > peak:
-            peak = bal
-        dd = peak - bal
-        if dd > max_dd:
-            max_dd = dd
-    return max_dd
-
-
-def profit_factor(pnls: List[float]) -> float:
-    gains = sum(x for x in pnls if x > 0)
-    losses = sum(-x for x in pnls if x < 0)
-    if losses <= 0:
-        return float("inf") if gains > 0 else 0.0
-    return gains / losses
-
-
-def avg_win_loss(pnls: List[float]) -> Tuple[float, float]:
-    wins = [x for x in pnls if x > 0]
-    losses = [x for x in pnls if x < 0]
-    avg_win = sum(wins) / len(wins) if wins else 0.0
-    avg_loss = sum(losses) / len(losses) if losses else 0.0  # negative
-    return avg_win, avg_loss
-
-
-def breakeven_wr_from_avgs(avg_win: float, avg_loss: float) -> float:
-    # avg_loss should be negative
-    if avg_win <= 0 or avg_loss >= 0:
-        return 0.0
-    L = abs(avg_loss)
-    return (L / (avg_win + L)) * 100.0
-
-
-# -----------------------------
-# Reporting
-# -----------------------------
-def print_header(events_count: int, pid_min: int, pid_max: int, t_min: Optional[datetime], t_max: Optional[datetime]) -> None:
-    tmin_s = _fmt_dt(t_min)
-    tmax_s = _fmt_dt(t_max)
-    print(f"Events: {events_count} | PID range: {pid_min}-{pid_max} | Time: {tmin_s} -> {tmax_s}")
-
-
-def print_key_stats(pos_aggs: Dict[int, PosAgg], balance_series: List[Tuple[datetime, float]]) -> None:
-    # count "trades" as positions with any close_time OR any pnl event
-    positions = list(pos_aggs.values())
-    traded = [p for p in positions if (p.close_time is not None) or (p.pnl_events > 0)]
-    pnls = [p.pnl for p in traded]
-
-    trades = len(traded)
-    wins = sum(1 for x in pnls if x > 0)
-    losses = sum(1 for x in pnls if x < 0)
-    wr = (wins / trades * 100.0) if trades else 0.0
-    net = sum(pnls) if pnls else 0.0
-
-    final_bal = balance_series[-1][1] if balance_series else None
-    maxdd = compute_max_dd(balance_series)
-
-    pf = profit_factor(pnls)
-    avgw, avgl = avg_win_loss(pnls)
-    rr = (avgw / abs(avgl)) if avgl < 0 else 0.0
-    be_wr = breakeven_wr_from_avgs(avgw, avgl)
-
-    print("KEY STATS (per position, aggregated partial closes):")
-    print(f"Trades: {trades} | Wins: {wins} | Losses: {losses} | WR: {wr:.1f}%")
-    if final_bal is None:
-        print(f"Net PnL: {net:.2f} | Final Bal: n/a | MaxDD: {maxdd:.2f}")
+"""
+Delolo Algo V6 - Backtest Auswertung
+pip install pandas plotly kaleido
+"""
+
+import json, re, os, sys
+from datetime import datetime
+import pandas as pd
+
+DATA_DIR      = r"C:\Users\ldenn\Documents\cAlgo\Sources\Robots\JSON_Data"
+EVENTS_FILE   = os.path.join(DATA_DIR, "events.json")
+LOG_FILE      = os.path.join(DATA_DIR, "log.txt")
+OUTPUT_DIR    = DATA_DIR
+START_BALANCE = 10_000.0
+
+try:
+    import plotly.graph_objects as go
+    PLOTLY_OK = True
+except ImportError:
+    print("INFO: plotly nicht gefunden, keine Charts. pip install plotly kaleido")
+    PLOTLY_OK = False
+
+# ── 1. LADEN ──────────────────────────────────────────────────────────────────
+with open(EVENTS_FILE, "r", encoding="utf-8") as fh:
+    events = json.load(fh)
+with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as fh:
+    log_text = fh.read()
+
+# ── 2. EVENTS ─────────────────────────────────────────────────────────────────
+df_ev = pd.DataFrame(events)
+df_ev["time_dt"] = pd.to_datetime(df_ev["time"], unit="ms", utc=True)
+
+CLOSE_EVENTS = ["Position geschlossen", "Stop-Loss-Zugriff", "Take-Profit-Zugriff"]
+df_closed = df_ev[df_ev["event"].isin(CLOSE_EVENTS)].copy()
+df_closed["grossProfit"] = pd.to_numeric(df_closed["grossProfit"], errors="coerce")
+df_closed = df_closed[df_closed["balance"].notna() & df_closed["grossProfit"].notna()].copy()
+df_open   = df_ev[df_ev["event"] == "Position erstellen"].copy()
+
+rows = []
+for idx in df_closed.index:
+    cr  = df_closed.loc[idx]
+    pid = cr["positionId"]
+    subset = df_open[df_open["positionId"] == pid]
+    exit_dt = cr["time_dt"]
+    if len(subset) > 0:
+        entry_dt = pd.Timestamp(subset["time_dt"].values[0], tz="UTC")
+        dur_min  = (exit_dt - entry_dt).total_seconds() / 60
+        ep       = subset["entryPrice"].values[0]
     else:
-        print(f"Net PnL: {net:.2f} | Final Bal: {final_bal:.2f} | MaxDD: {maxdd:.2f}")
-    if pf == float("inf"):
-        pf_s = "inf"
-    else:
-        pf_s = f"{pf:.2f}"
-    print(f"PF: {pf_s} | AvgWin: {avgw:.2f} | AvgLoss: {avgl:.2f} | RR: {rr:.2f}")
-    print(f"Breakeven WR (from avg win/loss): {be_wr:.1f}%")
+        entry_dt = None
+        dur_min  = None
+        ep       = cr["entryPrice"]
+    sl_rows = df_ev[(df_ev["positionId"] == pid) & (df_ev["event"].str.startswith("Position geaendert"))]
+    if len(sl_rows) == 0:
+        sl_rows = df_ev[(df_ev["positionId"] == pid) & (df_ev["event"].str.contains("geändert|geaendert", na=False))]
+    init_sl = sl_rows.iloc[0]["sl"] if len(sl_rows) > 0 else None
+    rows.append({
+        "positionId":   pid,
+        "type":         cr["type"],
+        "entryPrice":   ep,
+        "closePrice":   cr["closePrice"],
+        "grossProfit":  float(cr["grossProfit"]),
+        "pips":         cr["pips"],
+        "balance":      float(cr["balance"]),
+        "quantity":     cr["quantity"],
+        "sl":           init_sl,
+        "tp":           cr["tp"],
+        "close_event":  cr["event"],
+        "entry_dt":     entry_dt,
+        "exit_dt":      exit_dt,
+        "duration_min": dur_min,
+    })
 
+df = pd.DataFrame(rows).reset_index(drop=True)
+df["win"]        = df["grossProfit"] > 0
+df["exit_dow"]   = df["exit_dt"].dt.day_name()
+df["exit_month"] = df["exit_dt"].dt.to_period("M").astype(str)
 
-def print_diagnostics(pos_aggs: Dict[int, PosAgg]) -> None:
-    positions = list(pos_aggs.values())
-    total_sl_hits = sum(p.sl_hits for p in positions)
-    total_tp_hits = sum(p.tp_hits for p in positions)
-    total_sl_changes = sum(p.sl_changes for p in positions)
-    total_tp_changes = sum(p.tp_changes for p in positions)
-    total_vol_changes = sum(p.vol_changes for p in positions)
+# ── 3. LOG ────────────────────────────────────────────────────────────────────
+trade_re = re.compile(
+    r'(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2})\.\d+ \| Info \| TRADE #\d+ \w+ \| Score:(\d)/4 \| Pat:(.+)')
+adx_re   = re.compile(r'ADX:([\d.]+) \| HTF:(\w+)')
+lines    = log_text.split("\n")
+df["score"] = None
+df["pattern"] = None
+df["adx"]     = None
+df["htf"]     = None
 
-    print("STRUCTURE / DIAGNOSTICS (proxies):")
-    print(f"Total SL hits: {total_sl_hits} | Total TP hits: {total_tp_hits}")
-    print(f"Total SL changes: {total_sl_changes} | TP changes: {total_tp_changes} | Volume changes: {total_vol_changes}")
-    print("(Viele Volume changes => Partial TPs aktiv; viele SL changes => Trailing/BE aktiv)")
+for i, line in enumerate(lines):
+    m = trade_re.search(line)
+    if not m:
+        continue
+    dt_str, score, pat = m.group(1), m.group(2), m.group(3)
+    dt_utc = pd.Timestamp(datetime.strptime(dt_str, "%d.%m.%Y %H:%M:%S"), tz="UTC")
+    adx_val = htf_val = None
+    for j in range(i + 1, min(i + 5, len(lines))):
+        ma = adx_re.search(lines[j])
+        if ma:
+            adx_val  = float(ma.group(1))
+            htf_val  = ma.group(2)
+            break
+    mask = df["entry_dt"].notna() & (abs(df["entry_dt"] - dt_utc) < pd.Timedelta("2min"))
+    df.loc[mask, "score"]   = int(score)
+    df.loc[mask, "pattern"] = pat.strip()
+    df.loc[mask, "adx"]     = adx_val
+    df.loc[mask, "htf"]     = htf_val
 
+close_re   = re.compile(r'Trade Closed \[(WIN|LOSS)\].*?Reason:(\S+)')
+df_reasons = pd.DataFrame([{"result": m.group(1), "reason": m.group(2)}
+                            for m in close_re.finditer(log_text)])
 
-def print_top_trades(pos_aggs: Dict[int, PosAgg], top_n: int = 8) -> None:
-    traded = [p for p in pos_aggs.values() if (p.close_time is not None) or (p.pnl_events > 0)]
-    traded.sort(key=lambda p: p.pnl, reverse=True)
+# ── 4. METRIKEN ───────────────────────────────────────────────────────────────
+n        = len(df)
+n_win    = int(df["win"].sum())
+n_loss   = n - n_win
+wr       = n_win / n * 100 if n else 0
+gp       = df[df["win"]]["grossProfit"].sum()
+gl       = df[~df["win"]]["grossProfit"].sum()
+net_pnl  = df["grossProfit"].sum()
+pf       = abs(gp / gl)              if gl    != 0         else float("inf")
+avg_win  = df[df["win"]]["grossProfit"].mean()  if n_win   else 0
+avg_loss = df[~df["win"]]["grossProfit"].mean() if n_loss  else 0
+rr       = abs(avg_win / avg_loss)   if avg_loss != 0      else float("inf")
+expect   = (wr / 100 * avg_win) + ((1 - wr / 100) * avg_loss)
 
-    print(f"TOP {top_n} BEST TRADES (by net pnl per position):")
-    for p in traded[:top_n]:
-        print(f"PID {p.pid} pnl= {p.pnl:>6.2f} sl_hits={p.sl_hits} tp_hits={p.tp_hits} close={_fmt_dt(p.close_time)}")
+bal_arr   = df["balance"].dropna().values
+end_bal   = bal_arr[-1] if len(bal_arr) else START_BALANCE
+total_ret = (end_bal - START_BALANCE) / START_BALANCE * 100
+peak = START_BALANCE
+max_dd = max_dd_pct = 0.0
+for b in bal_arr:
+    if b > peak:
+        peak = b
+    dd  = peak - b
+    ddp = dd / peak * 100
+    if dd  > max_dd:     max_dd     = dd
+    if ddp > max_dd_pct: max_dd_pct = ddp
 
-    print(f"TOP {top_n} WORST TRADES:")
-    for p in traded[-top_n:]:
-        print(f"PID {p.pid} pnl= {p.pnl:>6.2f} sl_hits={p.sl_hits} tp_hits={p.tp_hits} close={_fmt_dt(p.close_time)}")
+sl_hits  = (df["close_event"] == "Stop-Loss-Zugriff").sum()
+tp_hits  = (df["close_event"] == "Take-Profit-Zugriff").sum()
+swap_cl  = (df["close_event"] == "Position geschlossen").sum()
+avg_dur  = df["duration_min"].mean() if df["duration_min"].notna().any() else 0
 
+# ── 5. KONSOLEN-REPORT ────────────────────────────────────────────────────────
+SEP  = "=" * 60
+SEP2 = "-" * 60
 
-def print_monthly_pnl(pos_aggs: Dict[int, PosAgg]) -> None:
-    monthly: Dict[str, float] = defaultdict(float)
-    for p in pos_aggs.values():
-        if p.close_time is None:
-            continue
-        key = p.close_time.strftime("%Y-%m")
-        monthly[key] += p.pnl
+print()
+print(SEP)
+print("  DELOLO ALGO V6 – BACKTEST REPORT")
+print(SEP)
+print(f"  Zeitraum:          {df['exit_dt'].min().strftime('%d.%m.%Y')} – {df['exit_dt'].max().strftime('%d.%m.%Y')}")
+print(f"  Startkapital:      {START_BALANCE:>10,.2f} EUR")
+print(f"  Endkapital:        {end_bal:>10,.2f} EUR")
+print(f"  Gesamtrendite:     {total_ret:>+9.2f}%")
+print(SEP2)
+print(f"  Trades gesamt:     {n:>6}")
+print(f"  Wins:              {n_win:>6}  ({n_win/n*100:.1f}%)")
+print(f"  Losses:            {n_loss:>6}  ({n_loss/n*100:.1f}%)")
+print(f"  Win Rate:          {wr:>9.1f}%")
+print(SEP2)
+print(f"  Net P/L:           {net_pnl:>+9.2f} EUR")
+print(f"  Profit Factor:     {pf:>9.2f}")
+print(f"  Avg Win:           {avg_win:>+9.2f} EUR")
+print(f"  Avg Loss:          {avg_loss:>+9.2f} EUR")
+print(f"  RR-Ratio:          {rr:>9.2f}")
+print(f"  Expectancy/Trade:  {expect:>+9.2f} EUR")
+print(SEP2)
+print(f"  Max Drawdown:      {max_dd:>+9.2f} EUR  ({max_dd_pct:.2f}%)")
+print(f"  Avg Haltedauer:    {avg_dur:>6.0f} min")
+print(SEP2)
+print(f"  Stop-Loss Hits:    {sl_hits:>6}")
+print(f"  Take-Profit Hits:  {tp_hits:>6}")
+print(f"  Swap/Manual Close: {swap_cl:>6}")
+print(SEP)
 
-    print("MONTHLY PnL:")
-    for k in sorted(monthly.keys()):
-        v = monthly[k]
-        sign = "+" if v >= 0 else ""
-        print(f"{k}: {sign}{v:.2f}")
+if df["score"].notna().any():
+    print()
+    print("  SCORE-PERFORMANCE:")
+    print(f"  {'Score':<10} {'Trades':>6} {'Wins':>6} {'WR%':>6} {'Net P/L':>10}")
+    print("  " + "-" * 42)
+    for sc in sorted(df["score"].dropna().unique()):
+        grp = df[df["score"] == sc]
+        w   = grp["win"].sum()
+        t   = len(grp)
+        pl  = grp["grossProfit"].sum()
+        print(f"  {str(sc)+'/4':<10} {t:>6} {w:>6} {w/t*100:>5.0f}% {pl:>+10.2f} EUR")
+    print(SEP)
 
+if df["pattern"].notna().any():
+    print()
+    print("  PATTERN-PERFORMANCE:")
+    print(f"  {'Pattern':<24} {'Trades':>6} {'Wins':>6} {'WR%':>6} {'Net P/L':>10}")
+    print("  " + "-" * 56)
+    for pat in sorted(df["pattern"].dropna().unique()):
+        grp = df[df["pattern"] == pat]
+        w   = grp["win"].sum()
+        t   = len(grp)
+        pl  = grp["grossProfit"].sum()
+        print(f"  {pat:<24} {t:>6} {w:>6} {w/t*100:>5.0f}% {pl:>+10.2f} EUR")
+    print(SEP)
 
-def print_event_counts(event_counts: Counter, top_n: int = 12) -> None:
-    print(f"EVENT COUNTS (top {top_n}):")
-    for name, c in event_counts.most_common(top_n):
-        print(f"{c} {name}")
+print()
+print("  NET P/L NACH WOCHENTAG:")
+DOW = ["Monday","Tuesday","Wednesday","Thursday","Friday"]
+for day in DOW:
+    grp = df[df["exit_dow"] == day]
+    if len(grp) == 0:
+        continue
+    pl  = grp["grossProfit"].sum()
+    bar = "#" * int(abs(pl) / 10)
+    sig = "+" if pl >= 0 else "-"
+    print(f"  {day:<12}  {pl:>+8.2f} EUR  {sig}{bar}")
+print(SEP)
 
+print()
+print("  NET P/L NACH MONAT:")
+for mon in sorted(df["exit_month"].unique()):
+    grp = df[df["exit_month"] == mon]
+    pl  = grp["grossProfit"].sum()
+    bar = "#" * int(abs(pl) / 20)
+    sig = "+" if pl >= 0 else "-"
+    print(f"  {mon}   {pl:>+8.2f} EUR  {sig}{bar}")
+print(SEP)
 
-# -----------------------------
-# IO
-# -----------------------------
-def read_events(path: str) -> List[Dict[str, Any]]:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+if len(df_reasons):
+    print()
+    print("  CLOSE-GRÜNDE:")
+    for reason, grp in df_reasons.groupby("reason"):
+        wins = (grp["result"] == "WIN").sum()
+        loss = (grp["result"] == "LOSS").sum()
+        print(f"  {reason:<28}  {len(grp):>3}x  (W:{wins} L:{loss})")
+    print(SEP)
 
-    if isinstance(data, dict) and "events" in data and isinstance(data["events"], list):
-        return data["events"]
-    if isinstance(data, list):
-        return data
+# ── 6. TRADE-LISTE ────────────────────────────────────────────────────────────
+print()
+print("  TRADE-LISTE (alle geschlossenen Trades):")
+print(f"  {'#':<4} {'Datum':<12} {'Dir':<5} {'Pat':<22} {'Sc':<4} {'ADX':<6} {'Pips':>7} {'P/L':>8} {'Grund':<15} {'Bal':>10}")
+print("  " + "-" * 100)
+for i, row in df.iterrows():
+    date_str = row["exit_dt"].strftime("%d.%m.%Y") if pd.notna(row["exit_dt"]) else "?"
+    pat      = str(row["pattern"])[:21] if pd.notna(row["pattern"]) else "-"
+    sc       = str(int(row["score"])) + "/4" if pd.notna(row["score"]) else "-"
+    adx_s    = f"{row['adx']:.1f}" if pd.notna(row["adx"]) else "-"
+    pips_s   = f"{row['pips']:+.1f}" if pd.notna(row["pips"]) else "-"
+    result   = "WIN " if row["win"] else "LOSS"
+    reason   = str(row["close_event"])[:14]
+    print(f"  {i+1:<4} {date_str:<12} {str(row['type']):<5} {pat:<22} {sc:<4} {adx_s:<6} {pips_s:>7} {row['grossProfit']:>+8.2f} {reason:<15} {row['balance']:>10.2f}")
 
-    raise ValueError("Unerwartetes JSON-Format: erwartet Liste oder {events:[...]}.")
+print(SEP)
+print()
 
+# ── 7. CSV EXPORT ─────────────────────────────────────────────────────────────
+csv_path = os.path.join(OUTPUT_DIR, "backtest_trades.csv")
+df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+print(f"  CSV gespeichert: {csv_path}")
 
-def build_default_input_path() -> str:
-    # Guess your folder layout:
-    # .../Robots/Tools and Analysis/JSON_Analysis.py
-    # .../Robots/JSON_events.json
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    robots_dir = os.path.dirname(script_dir)
-    return os.path.join(robots_dir, "JSON_Data", "events.json")
+# ── 8. CHARTS ─────────────────────────────────────────────────────────────────
+if PLOTLY_OK:
+    def save_chart(fig, name):
+        path = os.path.join(OUTPUT_DIR, name + ".png")
+        fig.write_image(path)
+        print(f"  Chart:  {path}")
 
+    # Equity
+    bal_s = df["balance"].dropna().reset_index(drop=True)
+    f1    = go.Figure()
+    f1.add_trace(go.Scatter(x=list(range(1, len(bal_s)+1)), y=bal_s,
+        mode="lines", fill="tozeroy", line=dict(width=2.5)))
+    f1.update_layout(title={"text": f"Equity Curve – {total_ret:+.1f}% ({df['exit_dt'].min().strftime('%b %Y')} – {df['exit_dt'].max().strftime('%b %Y')})"})
+    f1.update_xaxes(title_text="Trade #")
+    f1.update_yaxes(title_text="Balance (EUR)")
+    save_chart(f1, "equity_curve")
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description="Analyze cTrader JSON events (per position, partial closes aggregated).")
-    ap.add_argument("input", nargs="?", default=build_default_input_path(), help="Path to events.json")
-    ap.add_argument("--top", type=int, default=8, help="Top N best/worst positions")
-    ap.add_argument("--top-events", type=int, default=12, help="Top N event names")
-    ap.add_argument("--no-monthly", action="store_true", help="Disable monthly pnl output")
-    ap.add_argument("--no-events", action="store_true", help="Disable event count output")
-    args = ap.parse_args()
+    # P/L pro Trade
+    f2 = go.Figure()
+    f2.add_trace(go.Bar(x=list(range(1, n+1)), y=df["grossProfit"],
+        marker_color=["#2ecc71" if w else "#e74c3c" for w in df["win"]]))
+    f2.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.4)
+    f2.update_layout(title={"text": f"P/L je Trade  WR {wr:.0f}%  PF {pf:.2f}"})
+    f2.update_xaxes(title_text="Trade #")
+    f2.update_yaxes(title_text="P/L (EUR)")
+    save_chart(f2, "pnl_per_trade")
 
-    input_path = os.path.abspath(args.input)
-    raw_events = read_events(input_path)
-    norm = [normalize_event(x) for x in raw_events]
+    # Pattern
+    if df["pattern"].notna().any():
+        pdf = df.groupby("pattern").agg(count=("grossProfit","count"),
+                pnl=("grossProfit","sum"), wins=("win","sum")).reset_index()
+        pdf["wr_pct"] = (pdf["wins"] / pdf["count"] * 100).round(1)
+        f3 = go.Figure()
+        f3.add_trace(go.Bar(x=pdf["pattern"], y=pdf["pnl"],
+            marker_color=["#2ecc71" if p > 0 else "#e74c3c" for p in pdf["pnl"]]))
+        f3.update_layout(title={"text": "Net P/L nach Pattern"})
+        f3.update_xaxes(title_text="Pattern")
+        f3.update_yaxes(title_text="Net P/L (EUR)")
+        save_chart(f3, "pattern_pnl")
 
-    pos_aggs, balance_series, event_counts, pid_min, pid_max, t_min, t_max = aggregate(norm)
+    # Score
+    if df["score"].notna().any():
+        sdf = df.groupby("score").agg(count=("grossProfit","count"),
+                pnl=("grossProfit","sum"), wins=("win","sum")).reset_index()
+        sdf["label"] = sdf["score"].astype(str) + "/4"
+        f4 = go.Figure()
+        f4.add_trace(go.Bar(x=sdf["label"], y=sdf["pnl"],
+            marker_color=["#2ecc71" if p > 0 else "#e74c3c" for p in sdf["pnl"]]))
+        f4.update_layout(title={"text": "Net P/L nach Signal-Score"})
+        f4.update_xaxes(title_text="Score")
+        f4.update_yaxes(title_text="Net P/L (EUR)")
+        save_chart(f4, "score_pnl")
 
-    print_header(events_count=len(norm), pid_min=pid_min, pid_max=pid_max, t_min=t_min, t_max=t_max)
-    print("-" * 70)
-    print_key_stats(pos_aggs, balance_series)
-    print("-" * 70)
-    print_diagnostics(pos_aggs)
-    print("-" * 70)
-    print_top_trades(pos_aggs, top_n=max(1, args.top))
-    print("-" * 70)
-    if not args.no_monthly:
-        print_monthly_pnl(pos_aggs)
-        print("-" * 70)
-    if not args.no_events:
-        print_event_counts(event_counts, top_n=max(1, args.top_events))
-        print("=" * 70)
+    # Wochentag
+    DOW    = ["Monday","Tuesday","Wednesday","Thursday","Friday"]
+    dow_df = df.groupby("exit_dow").agg(pnl=("grossProfit","sum")).reindex(DOW).fillna(0).reset_index()
+    f5 = go.Figure()
+    f5.add_trace(go.Bar(x=dow_df["exit_dow"], y=dow_df["pnl"],
+        marker_color=["#2ecc71" if p > 0 else "#e74c3c" for p in dow_df["pnl"]]))
+    f5.update_layout(title={"text": "Net P/L nach Wochentag"})
+    f5.update_xaxes(title_text="Wochentag")
+    f5.update_yaxes(title_text="Net P/L (EUR)")
+    save_chart(f5, "dow_pnl")
 
-    return 0
+    # Monatlich
+    mon_df = df.groupby("exit_month").agg(pnl=("grossProfit","sum")).reset_index()
+    f6 = go.Figure()
+    f6.add_trace(go.Bar(x=mon_df["exit_month"], y=mon_df["pnl"],
+        marker_color=["#2ecc71" if p > 0 else "#e74c3c" for p in mon_df["pnl"]]))
+    f6.update_layout(title={"text": "Monatliche P/L"})
+    f6.update_xaxes(title_text="Monat", tickangle=30)
+    f6.update_yaxes(title_text="Net P/L (EUR)")
+    save_chart(f6, "monthly_pnl")
 
+    # Close Reasons
+    if len(df_reasons):
+        rdf = df_reasons.groupby("reason").size().reset_index(name="count")
+        f7  = go.Figure(go.Pie(labels=rdf["reason"], values=rdf["count"], hole=0.3))
+        f7.update_layout(title={"text": "Close-Gruende"},
+                         uniformtext_minsize=13, uniformtext_mode="hide")
+        save_chart(f7, "close_reasons")
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+print()
+print("  Fertig.")
+print(SEP)
