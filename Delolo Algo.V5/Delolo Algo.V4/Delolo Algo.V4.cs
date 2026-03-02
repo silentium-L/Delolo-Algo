@@ -8,28 +8,6 @@ namespace cAlgo.Robots
 {
     // ============================================================
     //  Multi-Indicator Scalper v5.2
-    //  Fixes vs v5.1:
-    //  [FIX-1] SwapThresholdCheck: pnl==0 Guard (Division /0)
-    //  [FIX-2] ManageOpenPositionsFull: null-Guard + Trailing
-    //          ohne Partial TPs korrekt aktiviert
-    //  [FIX-3] ExecuteTrade: trailingActive=true bei Start
-    //          wenn EnablePartialTPs=false
-    //  [FIX-4] IsSwapProtectionImminent: SwapProtectionBuffer
-    //          als konfigurierbarer Parameter (default 30min)
-    //  [FIX-5] CalculateMaxVolumeFromMargin: robustere Binary
-    //          Search mit step-basiertem Abbruch (30 Iter.)
-    //  Alle Fixes aus v5.1/v5.0/v4.9 enthalten
-    //  [FIX-1] ApplyTrailingStop: pos.Pips <= 0 Guard, kein
-    //          Trailing auf Verlustpositionen mehr moeglich
-    //  [FIX-2] GetAccruedSwap: pos.Swap statt Schaetzung,
-    //          korrekte Einheit (Kontowährung) fuer Swap-Check
-    //  [FIX-3] CheckBreakEven: funktioniert jetzt auch ohne
-    //          EnablePartialTPs (_tp1Price immer in ExecuteTrade)
-    //  [FIX-4] ResetDailyTracking: tradesOpenedToday=1 bei
-    //          Overnight-Position, verhindert falschen Zaehler
-    //  [FIX-5] CalculateRiskMultiplier: Normierung gegen
-    //          Basis-Score ohne ADX-Bonus
-    //  Alle Fixes aus v5.0/v4.9 enthalten
     // ============================================================
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
     public class MultiIndicatorScalper : Robot
