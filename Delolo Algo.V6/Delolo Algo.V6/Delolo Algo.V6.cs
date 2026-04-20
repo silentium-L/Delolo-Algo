@@ -32,6 +32,9 @@ namespace cAlgo.Robots
         [Parameter("Max Trades Per Direction Per Day", DefaultValue = 1, MinValue = 1, MaxValue = 5)]
         public int MaxTradesPerDirectionPerDay { get; set; }
 
+        [Parameter("Max Consecutive Losses", DefaultValue = 2, MinValue = 1, MaxValue = 10)]
+        public int MaxConsecutiveLosses { get; set; }
+
         [Parameter("Max Daily Loss (%)", DefaultValue = 3.0, MinValue = 1.0, MaxValue = 20.0)]
         public double MaxDailyLossPercent { get; set; }
 
@@ -129,7 +132,7 @@ namespace cAlgo.Robots
         [Parameter("Supertrend Multiplier", DefaultValue = 3.0, MinValue = 0.5, MaxValue = 10.0)]
         public double SupertrendMultiplier { get; set; }
 
-        [Parameter("Enable W1 Supertrend Filter", DefaultValue = true)]
+        [Parameter("Enable W1 Supertrend Filter", DefaultValue = false)]
         public bool EnableW1Filter { get; set; }
 
         [Parameter("W1 Supertrend Period", DefaultValue = 10, MinValue = 2, MaxValue = 50)]
@@ -210,6 +213,46 @@ namespace cAlgo.Robots
         [Parameter("Enable Shooting Star (Short)", DefaultValue = false)]
         public bool EnableShootingStar { get; set; }
 
+
+        [Parameter("== STRUKTUR + PULLBACK ==")]
+        public string StructLabel { get; set; }
+
+        [Parameter("Enable Pullback Strategy", DefaultValue = true)]
+        public bool EnablePullbackStrategy { get; set; }
+
+        [Parameter("EMA Pullback Period", DefaultValue = 21, MinValue = 5, MaxValue = 100)]
+        public int EmaPullbackPeriod { get; set; }
+
+        [Parameter("Pullback Touch Buffer (pips)", DefaultValue = 3.0, MinValue = 0.5, MaxValue = 20.0)]
+        public double PullbackTouchBufferPips { get; set; }
+
+        [Parameter("Swing Lookback Bars", DefaultValue = 5, MinValue = 2, MaxValue = 20)]
+        public int SwingLookback { get; set; }
+
+        [Parameter("Min Swing Distance (pips)", DefaultValue = 10.0, MinValue = 3.0, MaxValue = 50.0)]
+        public double MinSwingDistancePips { get; set; }
+
+        [Parameter("Structural SL: Max ATR Multiplier", DefaultValue = 1.8, MinValue = 1.0, MaxValue = 5.0)]
+        public double StructSLMaxAtr { get; set; }
+
+        [Parameter("Structural SL: Min ATR Multiplier", DefaultValue = 0.5, MinValue = 0.1, MaxValue = 2.0)]
+        public double StructSLMinAtr { get; set; }
+
+        [Parameter("Pattern Confirmation Required", DefaultValue = false)]
+        public bool PatternConfirmRequired { get; set; }
+
+        [Parameter("Enable RSI Filter Long", DefaultValue = true)]
+        public bool EnableRsiFilterLong { get; set; }
+
+        [Parameter("RSI Max for Long Entry", DefaultValue = 55, MinValue = 20, MaxValue = 70)]
+        public int RsiMaxForLong { get; set; }
+
+        [Parameter("Enable RSI Filter Short", DefaultValue = true)]
+        public bool EnableRsiFilterShort { get; set; }
+
+        [Parameter("RSI Min for Short Entry", DefaultValue = 45, MinValue = 30, MaxValue = 80)]
+        public int RsiMinForShort { get; set; }
+
         [Parameter("Engulfing Body Ratio", DefaultValue = 1.0, MinValue = 0.5, MaxValue = 5.0)]
         public double EngulfingBodyRatio { get; set; }
 
@@ -250,7 +293,7 @@ namespace cAlgo.Robots
         [Parameter("Take Profit 2 (ATR)", DefaultValue = 2.0, MinValue = 0.5, MaxValue = 20.0)]
         public double TakeProfit2Multiplier { get; set; }
 
-        [Parameter("Take Profit 3 (ATR)", DefaultValue = 2.5, MinValue = 0.5, MaxValue = 50.0)]
+        [Parameter("Take Profit 3 (ATR)", DefaultValue = 3.5, MinValue = 0.5, MaxValue = 50.0)]
         public double TakeProfit3Multiplier { get; set; }
 
         [Parameter("TP1 Close %", DefaultValue = 30, MinValue = 0, MaxValue = 100)]
@@ -345,6 +388,7 @@ namespace cAlgo.Robots
         // HTF-Daten
         private Bars                     htfBars;
         private ExponentialMovingAverage htfEma50;
+        private ExponentialMovingAverage emaPullback;
         private ExponentialMovingAverage htfEma200;
 
         // HTF Supertrend – manuell mit Wilder RMA (cAlgo API bietet keine HTF-Indikatoren)
@@ -375,8 +419,13 @@ namespace cAlgo.Robots
         private const string BotLabel = "DeloloV6";
 
         private int      tradesOpenedToday;
+        private int      _warmupBarCount = 0;
+        private bool     _warmupDone     = false;
+        private const int WarmupBarsNeeded = 250;
         private int      buyTradesToday;
         private int      sellTradesToday;
+        private int      consecutiveLosses = 0;
+        private DateTime pauseUntil        = DateTime.MinValue;
         private double   dailyStartBalance;
         private double   highestBalanceToday;
         private DateTime lastTradeDate;
@@ -423,7 +472,7 @@ namespace cAlgo.Robots
 
         protected override void OnStart()
         {
-            if (EmaFastPeriod >= EmaMidPeriod)
+if (EmaFastPeriod >= EmaMidPeriod)
                 Print("WARNING: EmaFastPeriod >= EmaMidPeriod!");
             if (EmaMidPeriod >= EmaSlowPeriod)
                 Print("WARNING: EmaMidPeriod >= EmaSlowPeriod!");
@@ -461,6 +510,7 @@ namespace cAlgo.Robots
                 RecalculateW1SupertrendFull();
             }
             htfEma50  = Indicators.ExponentialMovingAverage(htfBars.ClosePrices, 50);
+            emaPullback = Indicators.ExponentialMovingAverage(Bars.ClosePrices, EmaPullbackPeriod);
             htfEma200 = Indicators.ExponentialMovingAverage(htfBars.ClosePrices, 200);
 
             htfStBand = new double[HtfStHistory];
@@ -476,7 +526,7 @@ namespace cAlgo.Robots
 
             ResetDailyTracking();
 
-            Print("=== Delolo Algo V6 – Hypothese A [Fix: Patterns+W1+BE+DirLimit+ScoreEng] ===");
+            Print("=== Delolo Algo V6 – V7: Struktur+Pullback [EMA21+SwingSL] ===");
             Print($"Balance: {Account.Balance:F2} {Account.Asset.Name}");
             Print($"Session UTC: {StartHour:D2}:{StartMinute:D2} – {EndHour:D2}:{EndMinute:D2}");
             Print($"Gate: ADX {AdxMinTrend}–{AdxMaxTrend} | HTF: {HtfTimeFrame} | Spread < {MaxSpreadPips}p");
@@ -486,12 +536,20 @@ namespace cAlgo.Robots
 
         protected override void OnBar()
         {
-            int warmup = Math.Max(EmaSlowPeriod,
-                         Math.Max(AtrPeriod + AtrAvgLookback + 2,
-                         Math.Max(RsiPeriod + RsiLookback + 2,
-                         Math.Max(AdxPeriod + 5,
-                                  LtfStPeriod + 5))));
-            if (Bars.Count < warmup) return;
+            // Manueller Warmup-Counter bis alle Indikatoren stabil sind
+            if (!_warmupDone)
+            {
+                _warmupBarCount++;
+                if (_warmupBarCount >= WarmupBarsNeeded)
+                {
+                    _warmupDone = true;
+                    Print($"Warmup abgeschlossen nach {WarmupBarsNeeded} Bars – Bot aktiv.");
+                }
+                return;
+            }
+
+            // Warmup via _warmupDone (250 Bars) bereits oben geprüft
+            if (Server.Time < pauseUntil) return; // Verlust-Pause aktiv
 
             if (double.IsNaN(atr.Result.Last(1))    || atr.Result.Last(1) <= 0) return;
             if (double.IsNaN(adx.ADX.Last(1)))       return;
@@ -935,6 +993,113 @@ namespace cAlgo.Robots
 
         // ==================== ENTRY LOGIC ====================
 
+
+        // ==================== STRUKTUR + PULLBACK ====================
+
+        private bool IsPullbackToEma(bool isLong)
+        {
+            double buffer    = PullbackTouchBufferPips * Symbol.PipSize;
+            double curClose  = Bars.ClosePrices.Last(1);
+            double curEma    = emaPullback.Result.Last(1);
+
+            // Schritt 1: Aktuelle Kerze schliesst auf der richtigen Seite der EMA
+            if (isLong  && curClose <= curEma) return false;
+            if (!isLong && curClose >= curEma) return false;
+
+            // Schritt 2: In den letzten 1-5 Bars hat der Preis die EMA berührt
+            bool touched = false;
+            for (int i = 1; i <= 5; i++)
+            {
+                double emaI  = emaPullback.Result.Last(i);
+                double highI = Bars.HighPrices.Last(i);
+                double lowI  = Bars.LowPrices.Last(i);
+
+                if (isLong  && lowI  <= emaI + buffer) { touched = true; break; }
+                if (!isLong && highI >= emaI - buffer) { touched = true; break; }
+            }
+            if (!touched) return false;
+
+            // Schritt 3: Trend-Kontext — letzte 10 Bars überwiegend auf der richtigen EMA-Seite
+            int trendBars = 0;
+            for (int i = 2; i <= 11; i++)
+            {
+                double closeI = Bars.ClosePrices.Last(i);
+                double emaI   = emaPullback.Result.Last(i);
+                if (isLong  && closeI > emaI) trendBars++;
+                if (!isLong && closeI < emaI) trendBars++;
+            }
+            return trendBars >= 6; // mind. 60% der letzten 10 Bars auf richtiger Seite
+        }
+
+        private double FindSwingLow(int lookback)
+        {
+            double swingLow = double.MaxValue;
+            int bars = Bars.Count;
+            // Suche letztes valides Swing-Low: tiefste Low-Kerze mit lookback Bars links+rechts
+            for (int i = lookback + 1; i < Math.Min(bars - lookback, lookback * 6); i++)
+            {
+                double candidateLow = Bars.LowPrices.Last(i);
+                bool isSwing = true;
+                for (int j = 1; j <= lookback; j++)
+                {
+                    if (Bars.LowPrices.Last(i - j) < candidateLow ||
+                        Bars.LowPrices.Last(i + j) < candidateLow)
+                    { isSwing = false; break; }
+                }
+                if (isSwing) { swingLow = candidateLow; break; }
+            }
+            return swingLow == double.MaxValue ? Bars.LowPrices.Last(1) - atr.Result.Last(1) : swingLow;
+        }
+
+        private double FindSwingHigh(int lookback)
+        {
+            double swingHigh = double.MinValue;
+            int bars = Bars.Count;
+            for (int i = lookback + 1; i < Math.Min(bars - lookback, lookback * 6); i++)
+            {
+                double candidateHigh = Bars.HighPrices.Last(i);
+                bool isSwing = true;
+                for (int j = 1; j <= lookback; j++)
+                {
+                    if (Bars.HighPrices.Last(i - j) > candidateHigh ||
+                        Bars.HighPrices.Last(i + j) > candidateHigh)
+                    { isSwing = false; break; }
+                }
+                if (isSwing) { swingHigh = candidateHigh; break; }
+            }
+            return swingHigh == double.MinValue ? Bars.HighPrices.Last(1) + atr.Result.Last(1) : swingHigh;
+        }
+
+        private bool IsSwingDistanceValid(bool isLong)
+        {
+            double minDist  = MinSwingDistancePips * Symbol.PipSize;
+            double atrVal   = atr.Result.Last(1);
+            double maxSlDist = StructSLMaxAtr * atrVal;
+            double minSlDist = StructSLMinAtr * atrVal;
+
+            if (isLong)
+            {
+                double swingLow = FindSwingLow(SwingLookback);
+                double slDist   = Bars.ClosePrices.Last(1) - swingLow;
+                return slDist >= minDist && slDist >= minSlDist && slDist <= maxSlDist;
+            }
+            else
+            {
+                double swingHigh = FindSwingHigh(SwingLookback);
+                double slDist    = swingHigh - Bars.ClosePrices.Last(1);
+                return slDist >= minDist && slDist >= minSlDist && slDist <= maxSlDist;
+            }
+        }
+
+        private double GetStructuralSL(bool isLong)
+        {
+            double buffer = 2.0 * Symbol.PipSize;
+            if (isLong)
+                return Math.Round(FindSwingLow(SwingLookback) - buffer, Symbol.Digits);
+            else
+                return Math.Round(FindSwingHigh(SwingLookback) + buffer, Symbol.Digits);
+        }
+
         private void CheckForEntrySignal()
         {
             double atrVal = atr.Result.Last(1);
@@ -943,13 +1108,29 @@ namespace cAlgo.Robots
             if (IsHtfBullish() && IsPriceAboveEma200() && IsAdxValid())
             {
                 int score = CalcScore(isLong: true);
-                if (score >= MinScoreToTrade && buyTradesToday < MaxTradesPerDirectionPerDay && HasBullishTrigger(out string pat))
+                if (score >= MinScoreToTrade && buyTradesToday < MaxTradesPerDirectionPerDay)
                 {
-                    lastScore         = score;
-                    lastCandlePattern = pat;
-                    double mult = CalculateRiskMultiplier(score);
-                    ExecuteTrade(TradeType.Buy, atrVal, score, pat, mult);
-                    return;
+                    bool rsiLongOk  = !EnableRsiFilterLong || rsi.Result.Last(1) < RsiMaxForLong;
+                    bool pullbackOk = EnablePullbackStrategy
+                        ? IsPullbackToEma(isLong: true) && IsSwingDistanceValid(isLong: true) && rsiLongOk
+                        : true;
+
+                    bool patternOk = !PatternConfirmRequired || HasBullishTrigger(out _);
+                    HasBullishTrigger(out string pat);
+                    if (!patternOk) pat = "Pullback EMA";
+
+                    if (pullbackOk && (patternOk || !PatternConfirmRequired))
+                    {
+                        lastScore         = score;
+                        lastCandlePattern = EnablePullbackStrategy ? $"PB+{pat}" : pat;
+                        double mult       = CalculateRiskMultiplier(score);
+
+                        if (EnablePullbackStrategy)
+                            ExecuteTradeStructural(TradeType.Buy, atrVal, score, lastCandlePattern, mult);
+                        else
+                            ExecuteTrade(TradeType.Buy, atrVal, score, pat, mult);
+                        return;
+                    }
                 }
             }
 
@@ -958,12 +1139,28 @@ namespace cAlgo.Robots
             {
                 int score = CalcScore(isLong: false);
                 bool beMinOk = score >= BearishEngulfingMinScore;
-                if (score >= MinScoreToTrade && sellTradesToday < MaxTradesPerDirectionPerDay && HasBearishTrigger(out string pat, beMinOk))
+                if (score >= MinScoreToTrade && sellTradesToday < MaxTradesPerDirectionPerDay)
                 {
-                    lastScore         = score;
-                    lastCandlePattern = pat;
-                    double mult = CalculateRiskMultiplier(score);
-                    ExecuteTrade(TradeType.Sell, atrVal, score, pat, mult);
+                    bool rsiShortOk = !EnableRsiFilterShort || rsi.Result.Last(1) > RsiMinForShort;
+                    bool pullbackOk = EnablePullbackStrategy
+                        ? IsPullbackToEma(isLong: false) && IsSwingDistanceValid(isLong: false) && rsiShortOk
+                        : true;
+
+                    bool patternOk = !PatternConfirmRequired || HasBearishTrigger(out _, beMinOk);
+                    HasBearishTrigger(out string pat, beMinOk);
+                    if (!patternOk) pat = "Pullback EMA";
+
+                    if (pullbackOk && (patternOk || !PatternConfirmRequired))
+                    {
+                        lastScore         = score;
+                        lastCandlePattern = EnablePullbackStrategy ? $"PB+{pat}" : pat;
+                        double mult       = CalculateRiskMultiplier(score);
+
+                        if (EnablePullbackStrategy)
+                            ExecuteTradeStructural(TradeType.Sell, atrVal, score, lastCandlePattern, mult);
+                        else
+                            ExecuteTrade(TradeType.Sell, atrVal, score, pat, mult);
+                    }
                 }
             }
         }
@@ -1115,6 +1312,82 @@ namespace cAlgo.Robots
         }
 
         // ==================== EXECUTION ====================
+
+
+        private void ExecuteTradeStructural(TradeType tradeType, double atrVal,
+                                             int signalScore, string candlePattern, double riskMultiplier)
+        {
+            if (double.IsNaN(atrVal) || atrVal <= 0) { Print("ATR invalid, aborted."); return; }
+
+            double? ml = Account.MarginLevel;
+            if (ml.HasValue && ml.Value < 200) { Print($"Margin too low: {ml.Value:F0}%"); return; }
+
+            double slPrice   = GetStructuralSL(tradeType == TradeType.Buy);
+            double curPrice  = tradeType == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
+            double slDist    = Math.Abs(curPrice - slPrice);
+            double slPips    = slDist / Symbol.PipSize;
+
+            double minDist = Symbol.MinStopLossDistance;
+            if (slPips < minDist) { Print($"Structural SL too close: {slPips:F1}p. Aborted."); return; }
+
+            double effectiveRisk = RiskPercent * riskMultiplier;
+            double riskAmount    = Account.Balance * (effectiveRisk / 100.0);
+            double vol = CalculateVolumeInUnitsFromRisk(riskAmount, slPips, tradeType);
+            if (vol < Symbol.VolumeInUnitsMin) { Print("Volume too small."); return; }
+
+            double tp1Dist = TakeProfit1Multiplier * atrVal;
+            double tp2Dist = TakeProfit2Multiplier * atrVal;
+            double tp3Dist = TakeProfit3Multiplier * atrVal;
+
+            double tp1Price, tp2Price, tp3Price;
+            if (tradeType == TradeType.Buy)
+            {
+                tp1Price = Math.Round(curPrice + tp1Dist, Symbol.Digits);
+                tp2Price = Math.Round(curPrice + tp2Dist, Symbol.Digits);
+                tp3Price = Math.Round(curPrice + tp3Dist, Symbol.Digits);
+            }
+            else
+            {
+                tp1Price = Math.Round(curPrice - tp1Dist, Symbol.Digits);
+                tp2Price = Math.Round(curPrice - tp2Dist, Symbol.Digits);
+                tp3Price = Math.Round(curPrice - tp3Dist, Symbol.Digits);
+            }
+
+            slPrice = Math.Round(slPrice, Symbol.Digits);
+
+            double reqMargin = Symbol.GetEstimatedMargin(tradeType, vol);
+            if (Account.Margin + reqMargin > 0)
+            {
+                double mlAfter = (Account.Equity / (Account.Margin + reqMargin)) * 100;
+                if (mlAfter < 150) { Print($"ML after trade too low: {mlAfter:F0}%"); return; }
+            }
+
+            var result = ExecuteMarketOrder(tradeType, SymbolName, vol, BotLabel);
+            if (!result.IsSuccessful) { Print($"Order failed: {result.Error}"); return; }
+
+            var pos = result.Position;
+            var mod = ModifyPosition(pos, slPrice, tp3Price, ProtectionType.Absolute);
+            if (!mod.IsSuccessful)
+                Print($"WARNING: SL/TP failed: {mod.Error}");
+            else
+                Print($"Structural Trade: SL={slPrice:F5} ({slPips:F1}p) TP3={tp3Price:F5} RR=1:{(tp3Dist/slDist):F2}");
+
+            _tp1Price = tp1Price;
+            _tp2Price = tp2Price;
+            entryPrice = curPrice;
+            breakEvenSet = false;
+            tp1Hit = false;
+            tp2Hit = false;
+
+            positionPatterns[pos.Id] = candlePattern;
+            positionScores[pos.Id]   = signalScore;
+
+            tradesOpenedToday++;
+            if (tradeType == TradeType.Buy) buyTradesToday++;
+            else                            sellTradesToday++;
+
+            Print($"[{Server.Time:yyyy-MM-dd HH:mm}] {tradeType} STRUCTURAL | Pat:{candlePattern} Sc:{signalScore} SL:{slPips:F1}p Vol:{vol}");
+        }
 
         private void ExecuteTrade(TradeType tradeType, double atrVal,
                                   int signalScore, string candlePattern, double riskMultiplier)
@@ -1389,8 +1662,18 @@ namespace cAlgo.Robots
             bool   isWin = pnl > 0;
 
             totalTrades++;
-            if (isWin) { totalWins++;   totalWinAmount  += pnl; }
-            else       { totalLosses++; totalLossAmount += Math.Abs(pnl); }
+            if (isWin) { totalWins++;   totalWinAmount  += pnl; consecutiveLosses = 0; }
+            else
+            {
+                totalLosses++; totalLossAmount += Math.Abs(pnl);
+                consecutiveLosses++;
+                if (consecutiveLosses >= MaxConsecutiveLosses)
+                {
+                    pauseUntil        = Server.Time.AddHours(24);
+                    consecutiveLosses = 0;
+                    Print($"Max Verluste erreicht – Pause bis {pauseUntil:yyyy-MM-dd HH:mm}");
+                }
+            }
 
             string pat = positionPatterns.ContainsKey(pos.Id) ? positionPatterns[pos.Id] : "None";
             int    sc  = positionScores.ContainsKey(pos.Id)   ? positionScores[pos.Id]   : 0;
