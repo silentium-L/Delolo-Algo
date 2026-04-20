@@ -2,7 +2,7 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  2.8.0  (Add: Interval-Lot-TP System, Enhanced Trade Logging)
+//  Version      │  2.10.0 (Tuned Defaults: Risk-Profile optimized, earlier BE, tighter protection)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 using System;
@@ -120,7 +120,7 @@ namespace cAlgo.Robots
 
         // ── 02 · Spread Protection ───────────────────────────────────────────
         [Parameter("Max Allowed Spread (Pips)",
-            Group = "02 · Spread Protection", DefaultValue = 1.5, MinValue = 0.1, Step = 0.1)]
+            Group = "02 · Spread Protection", DefaultValue = 2.0, MinValue = 0.1, Step = 0.1)]
         public double MaxAllowedSpread { get; set; }
 
         // ── 03 · HTF Regime Filter ───────────────────────────────────────────
@@ -219,7 +219,7 @@ namespace cAlgo.Robots
         public bool EnableFiboModule { get; set; }
 
         [Parameter("Fibonacci Swing Lookback (Bars)",
-            Group = "09 · Module: Fibonacci", DefaultValue = 50, MinValue = 10, MaxValue = 500)]
+            Group = "09 · Module: Fibonacci", DefaultValue = 100, MinValue = 10, MaxValue = 500)]
         public int FiboSwingLookback { get; set; }
 
         [Parameter("Fibonacci Tolerance Zone (% of swing)",
@@ -278,7 +278,7 @@ namespace cAlgo.Robots
 
         // ── 12 · Scoring & Consensus ─────────────────────────────────────────
         [Parameter("Consensus Ratio (0.30–1.00)",
-            Group = "12 · Scoring & Consensus", DefaultValue = 0.65, MinValue = 0.30, MaxValue = 1.0, Step = 0.05)]
+            Group = "12 · Scoring & Consensus", DefaultValue = 0.70, MinValue = 0.30, MaxValue = 1.0, Step = 0.05)]
         public double ConsensusRatio { get; set; }
 
         [Parameter("Enable Verbose Score Logging",
@@ -317,7 +317,7 @@ namespace cAlgo.Robots
         public int AtrSlPeriod { get; set; }
 
         [Parameter("ATR SL Multiplier",
-            Group = "14 · Stop Loss", DefaultValue = 1.5, MinValue = 0.25, Step = 0.25)]
+            Group = "14 · Stop Loss", DefaultValue = 2.0, MinValue = 0.25, Step = 0.25)]
         public double AtrSlMultiplier { get; set; }
 
         [Parameter("Swing High/Low Lookback (Bars)",
@@ -338,7 +338,7 @@ namespace cAlgo.Robots
         public TpMethod TakeProfitMethod { get; set; }
 
         [Parameter("RRR Target (e.g. 2.0 = 1:2 R:R)",
-            Group = "15 · Take Profit", DefaultValue = 2.0, MinValue = 0.5, Step = 0.25)]
+            Group = "15 · Take Profit", DefaultValue = 2.5, MinValue = 0.5, Step = 0.25)]
         public double RrrTarget { get; set; }
 
         [Parameter("ATR TP Multiplier",
@@ -386,11 +386,11 @@ namespace cAlgo.Robots
         public bool EnableBreakEven { get; set; }
 
         [Parameter("Break-Even Trigger (R-Multiple)",
-            Group = "16 · Break-Even Engine", DefaultValue = 1.0, MinValue = 0.1, Step = 0.1)]
+            Group = "16 · Break-Even Engine", DefaultValue = 0.7, MinValue = 0.1, Step = 0.1)]
         public double BeRMultiple { get; set; }
 
         [Parameter("Break-Even Offset (Pips beyond Entry)",
-            Group = "16 · Break-Even Engine", DefaultValue = 0.5, MinValue = 0.0, Step = 0.1)]
+            Group = "16 · Break-Even Engine", DefaultValue = 1.0, MinValue = 0.0, Step = 0.1)]
         public double BeOffsetPips { get; set; }
 
         // ── 17 · Partial Close ───────────────────────────────────────────────
@@ -407,7 +407,7 @@ namespace cAlgo.Robots
         public double Partial1Percent { get; set; }
 
         [Parameter("Enable Partial Close Level 2",
-            Group = "17 · Partial Close", DefaultValue = false)]
+            Group = "17 · Partial Close", DefaultValue = true)]
         public bool EnablePartial2 { get; set; }
 
         [Parameter("Level 2 – Profit Trigger (R-Multiple)",
@@ -444,11 +444,11 @@ namespace cAlgo.Robots
         public int ChandelierAtrPeriod { get; set; }
 
         [Parameter("Chandelier ATR Multiplier",
-            Group = "18 · Trailing Stop", DefaultValue = 3.0, MinValue = 0.5, Step = 0.25)]
+            Group = "18 · Trailing Stop", DefaultValue = 2.5, MinValue = 0.5, Step = 0.25)]
         public double ChandelierAtrMultiplier { get; set; }
 
         [Parameter("Fast EMA Trailing Period",
-            Group = "18 · Trailing Stop", DefaultValue = 21, MinValue = 2, MaxValue = 500)]
+            Group = "18 · Trailing Stop", DefaultValue = 34, MinValue = 2, MaxValue = 500)]
         public int TrailingEmaPeriod { get; set; }
 
         [Parameter("Fast EMA Trail Filter Mode",
@@ -485,33 +485,33 @@ namespace cAlgo.Robots
         public bool EnableRsiPanicExit { get; set; }
 
         [Parameter("RSI Panic Level – Long (exit if RSI exceeds)",
-            Group = "19 · Exit Logic", DefaultValue = 80.0, MinValue = 60.0, MaxValue = 99.0)]
+            Group = "19 · Exit Logic", DefaultValue = 85.0, MinValue = 60.0, MaxValue = 99.0)]
         public double RsiPanicLong { get; set; }
 
         [Parameter("RSI Panic Level – Short (exit if RSI falls below)",
-            Group = "19 · Exit Logic", DefaultValue = 20.0, MinValue = 1.0, MaxValue = 40.0)]
+            Group = "19 · Exit Logic", DefaultValue = 15.0, MinValue = 1.0, MaxValue = 40.0)]
         public double RsiPanicShort { get; set; }
 
         // ── 20 · Account Protection ──────────────────────────────────────────
         [Parameter("Max Daily Drawdown % (halts new entries)",
-            Group = "20 · Account Protection", DefaultValue = 3.0, MinValue = 0.1, MaxValue = 100.0, Step = 0.1)]
+            Group = "20 · Account Protection", DefaultValue = 2.0, MinValue = 0.1, MaxValue = 100.0, Step = 0.1)]
         public double MaxDailyDrawdownPercent { get; set; }
 
         // P4: Kein klassisches Exposure-Konzept – summiert nur Floating Losses
         [Parameter("Max Floating Loss on Open Positions (% of Balance)",
-            Group = "20 · Account Protection", DefaultValue = 5.0, MinValue = 0.1, MaxValue = 100.0, Step = 0.1)]
+            Group = "20 · Account Protection", DefaultValue = 4.0, MinValue = 0.1, MaxValue = 100.0, Step = 0.1)]
         public double MaxFloatingLossPercent { get; set; }
 
         [Parameter("Max Trades per Day (0 = off)",
-            Group = "20 · Account Protection", DefaultValue = 5, MinValue = 0)]
+            Group = "20 · Account Protection", DefaultValue = 3, MinValue = 0)]
         public int MaxTradesPerDay { get; set; }
 
         [Parameter("Max Consecutive Losses (0 = off)",
-            Group = "20 · Account Protection", DefaultValue = 3, MinValue = 0)]
+            Group = "20 · Account Protection", DefaultValue = 2, MinValue = 0)]
         public int MaxConsecutiveLosses { get; set; }
 
         [Parameter("Cooldown Minutes after Loss Streak",
-            Group = "20 · Account Protection", DefaultValue = 60, MinValue = 1)]
+            Group = "20 · Account Protection", DefaultValue = 120, MinValue = 1)]
         public int CooldownMinutesAfterLossStreak { get; set; }
 
         // ── 21 · Dashboard ───────────────────────────────────────────────────
@@ -576,13 +576,25 @@ namespace cAlgo.Robots
         private bool   _stFlippedThisBar = false;
         private bool   _stInitialized    = false;
 
+        // v2.9.0 – Performance Caches
+        // Dashboard throttling: Tick-Aufrufe rendern nur alle N Millisekunden neu.
+        private DateTime _lastDashboardUpdate = DateTime.MinValue;
+        private const int DashboardThrottleMs = 1000;
+
+        // Reversal-Exit Counter-Score: pro Bar berechnen, nicht pro Tick.
+        private DateTime _lastCounterScoreBarTime = DateTime.MinValue;
+        private int      _cachedCounterScore      = 0;
+        private bool     _cachedCounterTradable   = false;
+
+        private const string BotLabel = "10-Fold Bot";
+
         // ════════════════════════════════════════════════════════════════════
         //  OnStart
         // ════════════════════════════════════════════════════════════════════
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v2.7.0  │  Starting           ║");
+            Print("║   10-Fold Bot  v2.10.0 │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -602,6 +614,7 @@ namespace cAlgo.Robots
             {
                 InitializeIndicators();
                 CalculateScoreThresholds();
+                RecoverExistingPosition();
             }
 
             ResetDailyState();
@@ -638,7 +651,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v2.7.0  │  Stopped            ║");
+            Print("║   10-Fold Bot  v2.10.0 │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -783,6 +796,100 @@ namespace cAlgo.Robots
                 _htfEma  = Indicators.MovingAverage(_htfBars.ClosePrices, HtfEmaPeriod, MovingAverageType.Exponential);
                 Print("  [✓] HTF  TF={0} EMA={1}", HtfTimeFrame, HtfEmaPeriod);
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  RecoverExistingPosition (v2.9.0)
+        //  Findet bei Bot-Start eine bereits offene Position mit passendem Label
+        //  und rekonstruiert den TradeState konservativ, damit Trailing/Exits
+        //  weiterlaufen. Partials werden als "done" markiert (kein Re-Trigger).
+        // ─────────────────────────────────────────────────────────────────────
+        private void RecoverExistingPosition()
+        {
+            Position found = null;
+            foreach (var p in Positions)
+            {
+                if (p.SymbolName == SymbolName && p.Label == BotLabel)
+                {
+                    found = p;
+                    break;
+                }
+            }
+
+            if (found == null) return;
+
+            bool   isLong     = found.TradeType == TradeType.Buy;
+            double entry      = found.EntryPrice;
+            double slPips     = 0;
+
+            if (found.StopLoss.HasValue)
+            {
+                slPips = isLong
+                    ? (entry - found.StopLoss.Value) / Symbol.PipSize
+                    : (found.StopLoss.Value - entry) / Symbol.PipSize;
+                slPips = Math.Abs(slPips);
+            }
+
+            // Fallback: Falls kein SL gesetzt oder SL = Entry (BE), dann ATR als Basis.
+            if (slPips <= 0.1 && _atrSl != null)
+            {
+                double atr = _atrSl.Result.LastValue;
+                if (!double.IsNaN(atr) && atr > 0)
+                    slPips = (atr / Symbol.PipSize) * AtrSlMultiplier;
+            }
+            if (slPips <= 0.1) slPips = FixedSlPips;
+
+            // BreakEven-Erkennung: SL bereits auf oder jenseits Entry → BE als erledigt markieren.
+            bool beDone = false;
+            if (found.StopLoss.HasValue)
+            {
+                beDone = isLong
+                    ? found.StopLoss.Value >= entry - 0.1 * Symbol.PipSize
+                    : found.StopLoss.Value <= entry + 0.1 * Symbol.PipSize;
+            }
+
+            double atrAtEntry = 0;
+            if (TakeProfitMethod == TpMethod.IntervalLot
+                && IntervalTpBasis == IntervalBasis.AtrMultiple
+                && _atrSl != null)
+            {
+                atrAtEntry = _atrSl.Result.LastValue;
+                if (double.IsNaN(atrAtEntry)) atrAtEntry = 0;
+            }
+
+            // Intervals-Rekonstruktion: Aus aktueller Preisbewegung schätzen.
+            int intervalsTriggered = 0;
+            if (TakeProfitMethod == TpMethod.IntervalLot)
+            {
+                double currentMove = isLong ? Symbol.Bid - entry : entry - Symbol.Ask;
+                double intervalPx  = IntervalTpBasis == IntervalBasis.Pips
+                    ? IntervalPips * Symbol.PipSize
+                    : atrAtEntry * IntervalAtrMultiple;
+                if (intervalPx > 0 && currentMove > 0)
+                    intervalsTriggered = (int)Math.Floor(currentMove / intervalPx);
+            }
+
+            _currentTrade = new TradeState
+            {
+                PositionId           = found.Id,
+                EntryPrice           = entry,
+                InitialSlPips        = slPips,
+                InitialVolume        = found.VolumeInUnits,   // Original unbekannt – current als Proxy
+                BreakEvenDone        = beDone,
+                Partial1Done         = true,                  // Konservativ: kein Re-Trigger nach Restart
+                Partial2Done         = true,
+                Partial3Done         = true,
+                ChandelierStopLong   = isLong  && found.StopLoss.HasValue ? found.StopLoss.Value : 0,
+                ChandelierStopShort  = !isLong && found.StopLoss.HasValue ? found.StopLoss.Value : double.MaxValue,
+                ConsecutiveEmaCloses = 0,
+                IntervalsTriggered   = intervalsTriggered,
+                IntervalAtrAtEntry   = atrAtEntry
+            };
+
+            Print("RECOVERY: Adopted open position Id={0} {1} Entry={2:F5} SL={3:F1}p Vol={4:F0}u | " +
+                  "BE-done={5} Partials→done (no retrigger) Intervals={6}",
+                found.Id, found.TradeType, entry, slPips, found.VolumeInUnits,
+                beDone, intervalsTriggered);
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -955,7 +1062,7 @@ namespace cAlgo.Robots
             if (args.Position.SymbolName != SymbolName)
                 return;
 
-            if (args.Position.Label != "10-Fold Bot")
+            if (args.Position.Label != BotLabel)
                 return;
 
             if (args.Position.NetProfit < 0)
@@ -1128,8 +1235,13 @@ namespace cAlgo.Robots
 
             CheckDailyDrawdown();
 
-            if (ShowDashboard)
+            // v2.9.0 – Dashboard-Throttle: max 1x/Sek., um Chart-Rendering-Overhead pro Tick zu vermeiden.
+            if (ShowDashboard &&
+                (Server.Time - _lastDashboardUpdate).TotalMilliseconds >= DashboardThrottleMs)
+            {
                 UpdateDashboard();
+                _lastDashboardUpdate = Server.Time;
+            }
 
             if (_dailyDrawdownBreached) return;
             if (_currentTrade == null)  return;
@@ -1256,7 +1368,9 @@ namespace cAlgo.Robots
                 if (pos.SymbolName == SymbolName)
                     totalUnrealised += pos.NetProfit < 0 ? Math.Abs(pos.NetProfit) : 0;
             }
-            double exposurePct = (totalUnrealised / Account.Balance) * 100.0;
+            // v2.9.0 – Guard gegen Division durch 0 bei leerem/unentfinierten Account
+            double exposurePct = Account.Balance > 0
+                ? (totalUnrealised / Account.Balance) * 100.0 : 0;
             if (exposurePct >= MaxFloatingLossPercent)
             {
                 if (logRejections) Print("Trade rejected [{0}]: Max floating loss {1:F2}% >= limit {2:F1}%.",
@@ -1949,7 +2063,7 @@ namespace cAlgo.Robots
                 volumeInUnits, volumeInUnits / Symbol.LotSize);
 
             var result = ExecuteMarketOrder(
-                direction, SymbolName, volumeInUnits, "10-Fold Bot",
+                direction, SymbolName, volumeInUnits, BotLabel,
                 slPips, tpPips > 0 ? (double?)tpPips : null);
 
             if (!result.IsSuccessful)
@@ -2095,10 +2209,13 @@ namespace cAlgo.Robots
             double closeUnits = Symbol.NormalizeVolumeInUnits(
                 pos.VolumeInUnits * (percent / 100.0), RoundingMode.Down);
 
+            // v2.9.0 – Bei invalidem Volumen Level als "done" markieren, um Tick-Spam zu vermeiden.
+            // Grund: War bisher false → Print-Flut pro Tick, solange Trigger-R überschritten ist.
             if (closeUnits <= 0 || closeUnits >= pos.VolumeInUnits)
             {
-                Print("Partial{0}: Volume calculation invalid ({1:F0} units). Skipping.", level, closeUnits);
-                return false;
+                Print("Partial{0}: Volume calculation invalid ({1:F0} units) at {2:F2}R – marking as done to prevent retry.",
+                    level, closeUnits, currentR);
+                return true;
             }
 
             var result = ClosePosition(pos, closeUnits);
@@ -2375,19 +2492,24 @@ namespace cAlgo.Robots
             }
 
             // ── e) Reversal Exit ──────────────────────────────────────────────
-            // logVerbose: false → kein Modul-Print-Spam pro Tick
+            // v2.9.0 – Counter-Score wird pro Bar gecacht, nicht pro Tick neu berechnet.
+            // Scores ändern sich erst mit geschlossenem Bar; Tick-Polling wäre reine CPU-Verschwendung.
             if (EnableReversalExit)
             {
-                TradeType counter    = isLong ? TradeType.Sell : TradeType.Buy;
-                // logRejections: false → kein Tick-Spam im Log
-                bool counterTradable = IsMarketTradable(counter, logRejections: false);
-                int  counterScore    = counterTradable
-                    ? CalculateEntryScore(counter, logVerbose: false) : 0;
+                DateTime curBarTime = Bars.OpenTimes.LastValue;
+                if (curBarTime != _lastCounterScoreBarTime)
+                {
+                    TradeType counter = isLong ? TradeType.Sell : TradeType.Buy;
+                    _cachedCounterTradable   = IsMarketTradable(counter, logRejections: false);
+                    _cachedCounterScore      = _cachedCounterTradable
+                        ? CalculateEntryScore(counter, logVerbose: false) : 0;
+                    _lastCounterScoreBarTime = curBarTime;
+                }
 
-                if (counterScore >= _minRequiredScore)
+                if (_cachedCounterScore >= _minRequiredScore)
                 {
                     Print("Reversal exit [{0}]: Counter-direction score {1}/{2} >= {3}. Closing.",
-                        isLong ? "Long" : "Short", counterScore, _maxPossibleScore, _minRequiredScore);
+                        isLong ? "Long" : "Short", _cachedCounterScore, _maxPossibleScore, _minRequiredScore);
                     ForceCloseCurrentTrade("Reversal");
                     return;
                 }

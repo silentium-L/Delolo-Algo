@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "dgSpecHash": "YNRzp6aQi3FgejLqsh1zrbpVE72y3WgOKO6Lx9LYEHeVCNyClVD/b3nlsdCNLYpGaQFkfNFRSqpJTpUmOXxl4g==",
+  "success": true,
+  "projectFilePath": "C:\\Users\\ldenn\\Documents\\cAlgo\\Sources\\Robots\\Ten-Fold 3.0\\Ten-Fold 3.0\\Ten-Fold 3.0.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\ldenn\\.nuget\\packages\\ctrader.automate\\1.0.17\\ctrader.automate.1.0.17.nupkg.sha512",
+    "C:\\Users\\ldenn\\.nuget\\packages\\microsoft.netcore.app.ref\\6.0.25\\microsoft.netcore.app.ref.6.0.25.nupkg.sha512",
+    "C:\\Users\\ldenn\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\6.0.25\\microsoft.windowsdesktop.app.ref.6.0.25.nupkg.sha512",
+    "C:\\Users\\ldenn\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\6.0.25\\microsoft.aspnetcore.app.ref.6.0.25.nupkg.sha512"
+  ],
+  "logs": []
+}
