@@ -1116,28 +1116,40 @@ namespace cAlgo.Robots
                     intervalsTriggered = (int)Math.Floor(currentMove / intervalPx);
             }
 
+            // v2.13.0 – P4: use persisted TradeState if position ID matches
+            TradeState persisted = LoadPersistedTradeState();
+            bool usePersisted = persisted != null && persisted.PositionId == found.Id;
+
             _currentTrade = new TradeState
             {
                 PositionId           = found.Id,
-                EntryPrice           = entry,
-                InitialSlPips        = slPips,
-                InitialVolume        = found.VolumeInUnits,   // Original unbekannt – current als Proxy
-                BreakEvenDone        = beDone,
-                Partial1Done         = true,                  // Konservativ: kein Re-Trigger nach Restart
-                Partial2Done         = true,
-                Partial3Done         = true,
+                EntryPrice           = usePersisted && persisted.EntryPrice > 0 ? persisted.EntryPrice : entry,
+                InitialSlPips        = usePersisted && persisted.InitialSlPips > 0 ? persisted.InitialSlPips : slPips,
+                InitialVolume        = usePersisted && persisted.InitialVolume > 0 ? persisted.InitialVolume : found.VolumeInUnits,
+                BreakEvenDone        = usePersisted ? persisted.BreakEvenDone : beDone,
+                Partial1Done         = usePersisted ? persisted.Partial1Done : true,   // conservative if no persisted state
+                Partial2Done         = usePersisted ? persisted.Partial2Done : true,
+                Partial3Done         = usePersisted ? persisted.Partial3Done : true,
                 ChandelierStopLong   = isLong  && found.StopLoss.HasValue ? found.StopLoss.Value : 0,
                 ChandelierStopShort  = !isLong && found.StopLoss.HasValue ? found.StopLoss.Value : double.MaxValue,
                 ConsecutiveEmaCloses = 0,
-                IntervalsTriggered   = intervalsTriggered,
-                IntervalAtrAtEntry   = atrAtEntry,
-                EntryTime            = found.EntryTime       // v2.12.0: für Max-Hold-Time-Exit
+                IntervalsTriggered   = usePersisted ? persisted.IntervalsTriggered : intervalsTriggered,
+                IntervalAtrAtEntry   = usePersisted && persisted.IntervalAtrAtEntry > 0 ? persisted.IntervalAtrAtEntry : atrAtEntry,
+                EntryTime            = usePersisted && persisted.EntryTime != DateTime.MinValue ? persisted.EntryTime : found.EntryTime
             };
 
-            Print("RECOVERY: Adopted open position Id={0} {1} Entry={2:F5} | " +
-                  "Partials disabled (all Done=true – original volume unknown). InitialVolume={3:F0}u. " +
-                  "Trailing/BE/Intervals only. EntryTime={4:yyyy-MM-dd HH:mm:ss}",
-                found.Id, found.TradeType, entry, found.VolumeInUnits, found.EntryTime);
+            if (usePersisted)
+                Print("RECOVERY: Position Id={0} {1} – using PERSISTED state. " +
+                      "BE={2} P1={3} P2={4} P3={5} Intervals={6} Entry={7:F5} SL={8:F1}p",
+                    found.Id, found.TradeType,
+                    _currentTrade.BreakEvenDone, _currentTrade.Partial1Done,
+                    _currentTrade.Partial2Done, _currentTrade.Partial3Done,
+                    _currentTrade.IntervalsTriggered, _currentTrade.EntryPrice, _currentTrade.InitialSlPips);
+            else
+                Print("RECOVERY: Adopted open position Id={0} {1} Entry={2:F5} | " +
+                      "No persisted state – Partials set Done=true (conservative). InitialVolume={3:F0}u. " +
+                      "Trailing/BE/Intervals only. EntryTime={4:yyyy-MM-dd HH:mm:ss}",
+                    found.Id, found.TradeType, entry, found.VolumeInUnits, found.EntryTime);
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -1270,6 +1282,110 @@ namespace cAlgo.Robots
             {
                 Print("  [!] PersistDailyState error: {0}", ex.Message);
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  PersistTradeState / LoadPersistedTradeState / DeletePersistedTradeState
+        //  (v2.13.0 – P4)
+        // ─────────────────────────────────────────────────────────────────────
+        private void PersistTradeState()
+        {
+            if (_currentTrade == null) return;
+            try
+            {
+                var ci = System.Globalization.CultureInfo.InvariantCulture;
+                ObjectStore.SetValue("10fold_trade_id",        _currentTrade.PositionId.ToString());
+                ObjectStore.SetValue("10fold_trade_entry",     _currentTrade.EntryPrice.ToString("F8", ci));
+                ObjectStore.SetValue("10fold_trade_slpips",    _currentTrade.InitialSlPips.ToString("F4", ci));
+                ObjectStore.SetValue("10fold_trade_initvol",   _currentTrade.InitialVolume.ToString("F0", ci));
+                ObjectStore.SetValue("10fold_trade_be",        _currentTrade.BreakEvenDone ? "1" : "0");
+                ObjectStore.SetValue("10fold_trade_p1",        _currentTrade.Partial1Done  ? "1" : "0");
+                ObjectStore.SetValue("10fold_trade_p2",        _currentTrade.Partial2Done  ? "1" : "0");
+                ObjectStore.SetValue("10fold_trade_p3",        _currentTrade.Partial3Done  ? "1" : "0");
+                ObjectStore.SetValue("10fold_trade_intervals", _currentTrade.IntervalsTriggered.ToString());
+                ObjectStore.SetValue("10fold_trade_atrentry",  _currentTrade.IntervalAtrAtEntry.ToString("F8", ci));
+                ObjectStore.SetValue("10fold_trade_entrytime", _currentTrade.EntryTime.ToString("O"));
+            }
+            catch (Exception ex) { Print("  [!] PersistTradeState error: {0}", ex.Message); }
+        }
+
+        private TradeState LoadPersistedTradeState()
+        {
+            try
+            {
+                var ci = System.Globalization.CultureInfo.InvariantCulture;
+                object idObj = ObjectStore.GetValue("10fold_trade_id");
+                if (idObj == null) return null;
+                int posId;
+                if (!int.TryParse(idObj.ToString(), out posId) || posId <= 0) return null;
+
+                var ts = new TradeState { PositionId = posId };
+
+                object v;
+                double d;
+                int    n;
+                DateTime dt;
+
+                v = ObjectStore.GetValue("10fold_trade_entry");
+                if (v != null && double.TryParse(v.ToString(), System.Globalization.NumberStyles.Float, ci, out d))
+                    ts.EntryPrice = d;
+
+                v = ObjectStore.GetValue("10fold_trade_slpips");
+                if (v != null && double.TryParse(v.ToString(), System.Globalization.NumberStyles.Float, ci, out d))
+                    ts.InitialSlPips = d;
+
+                v = ObjectStore.GetValue("10fold_trade_initvol");
+                if (v != null && double.TryParse(v.ToString(), System.Globalization.NumberStyles.Float, ci, out d))
+                    ts.InitialVolume = d;
+
+                v = ObjectStore.GetValue("10fold_trade_be");
+                ts.BreakEvenDone = (v != null && v.ToString() == "1");
+
+                v = ObjectStore.GetValue("10fold_trade_p1");
+                ts.Partial1Done = (v != null && v.ToString() == "1");
+
+                v = ObjectStore.GetValue("10fold_trade_p2");
+                ts.Partial2Done = (v != null && v.ToString() == "1");
+
+                v = ObjectStore.GetValue("10fold_trade_p3");
+                ts.Partial3Done = (v != null && v.ToString() == "1");
+
+                v = ObjectStore.GetValue("10fold_trade_intervals");
+                if (v != null && int.TryParse(v.ToString(), out n))
+                    ts.IntervalsTriggered = n;
+
+                v = ObjectStore.GetValue("10fold_trade_atrentry");
+                if (v != null && double.TryParse(v.ToString(), System.Globalization.NumberStyles.Float, ci, out d))
+                    ts.IntervalAtrAtEntry = d;
+
+                v = ObjectStore.GetValue("10fold_trade_entrytime");
+                if (v != null && DateTime.TryParseExact(v.ToString(), "O",
+                    ci, System.Globalization.DateTimeStyles.RoundtripKind, out dt))
+                    ts.EntryTime = dt;
+
+                return ts;
+            }
+            catch (Exception ex)
+            {
+                Print("  [!] LoadPersistedTradeState error: {0}", ex.Message);
+                return null;
+            }
+        }
+
+        private void DeletePersistedTradeState()
+        {
+            try
+            {
+                string[] keys = {
+                    "10fold_trade_id", "10fold_trade_entry", "10fold_trade_slpips",
+                    "10fold_trade_initvol", "10fold_trade_be", "10fold_trade_p1",
+                    "10fold_trade_p2", "10fold_trade_p3", "10fold_trade_intervals",
+                    "10fold_trade_atrentry", "10fold_trade_entrytime"
+                };
+                foreach (var k in keys)
+                    ObjectStore.Remove(k);
+            }
+            catch (Exception ex) { Print("  [!] DeletePersistedTradeState error: {0}", ex.Message); }
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -1490,6 +1606,10 @@ namespace cAlgo.Robots
                 _consecutiveLosses = 0;
             }
 
+            // v2.13.0 – P4: delete persisted TradeState so a fresh trade starts clean
+            if (_currentTrade != null && args.Position.Id == _currentTrade.PositionId)
+                DeletePersistedTradeState();
+
             // v2.13.0 – P2: Trade Attribution CSV log
             if (EnableTradeAttributionLog
                 && _currentTrade != null
@@ -1644,7 +1764,11 @@ namespace cAlgo.Robots
             if (_dailyDrawdownBreached) { Print("OnBar: Daily drawdown breached – no new entries."); return; }
             if (MaxWeeklyDrawdownPercent > 0 && _weeklyDrawdownBreached)
                 { Print("OnBar: Weekly drawdown breached – no new entries until Monday."); return; }
-            if (_currentTrade != null)  return;
+            if (_currentTrade != null)
+            {
+                PersistTradeState(); // v2.13.0 – P4: keep state current (once per bar)
+                return;
+            }
 
             if (EnableSupertrendModule) UpdateSupertrendState();
 
@@ -2861,6 +2985,7 @@ namespace cAlgo.Robots
             _totalTradesOpened++;
             _tradesToday++;
             PersistDailyState();
+            PersistTradeState(); // v2.13.0 – P4: persist trade state for restart recovery
 
             // v2.13.0 – P2: capture entry attribution data for CSV log
             if (EnableTradeAttributionLog)
