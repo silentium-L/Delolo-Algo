@@ -51,6 +51,14 @@ namespace cAlgo.Robots
 
         // v2.12.0 – Trade entry time for max-hold-time-exit
         public DateTime EntryTime          { get; set; }
+
+        // v2.13.0 – Trade Attribution Log (P2)
+        public int[]   EntryModuleScores { get; set; }  // [EMA,BB,ST,PA,FIB,OSC,SR,MACD,ADX]
+        public int     EntryTotalScore   { get; set; }
+        public double  EntrySpreadPips   { get; set; }
+        public double  EntryAtrPips      { get; set; }
+        public string  EntryHtfRegime    { get; set; }  // BULL/BEAR/NA
+        public double  EntryAdxValue     { get; set; }
     }
 
 
@@ -350,6 +358,10 @@ namespace cAlgo.Robots
         [Parameter("Block On Conflicting Signals (both Long+Short qualify)",
             Group = "12 · Scoring & Consensus", DefaultValue = true)]
         public bool BlockOnConflictingSignals { get; set; }
+
+        [Parameter("Enable Trade Attribution Log (print [TRADECSV] per closed trade)",
+            Group = "12 · Scoring & Consensus", DefaultValue = false)]
+        public bool EnableTradeAttributionLog { get; set; }
 
         // ── 12b · Category Caps (v2.12.0) ──────────────────────────────────────
         [Parameter("Enable Category Score Caps",
@@ -662,6 +674,12 @@ namespace cAlgo.Robots
         private DateTime _startTime;
         private int      _totalTradesOpened = 0;
 
+        // v2.13.0 – P2: Trade Attribution Tracking
+        private double[] _attrSumScoresWin  = new double[9];
+        private double[] _attrSumScoresLoss = new double[9];
+        private int      _attrCountWin      = 0;
+        private int      _attrCountLoss     = 0;
+
         // VWAP Cache – einmal pro Bar in OnBar() berechnet
         private double   _cachedVwap      = 0;
         private int      _cachedLongScore  = 0;
@@ -778,6 +796,21 @@ namespace cAlgo.Robots
             if (_currentTrade != null)
                 Print("  WARNUNG: Trade Id={0} ist noch offen – SL/TP gelten weiterhin.",
                     _currentTrade.PositionId);
+
+            if (EnableTradeAttributionLog && (_attrCountWin + _attrCountLoss) > 0)
+            {
+                string[] names = { "EMA", "BB", "ST", "PA", "FIB", "OSC", "SR", "MACD", "ADX" };
+                Print("── Trade Attribution Stats ──────────────────────────");
+                Print("  Winners: {0}  Losers: {1}", _attrCountWin, _attrCountLoss);
+                Print("  Module   Avg(win)  Avg(loss)  Delta");
+                for (int i = 0; i < 9; i++)
+                {
+                    double aw = _attrCountWin  > 0 ? _attrSumScoresWin[i]  / _attrCountWin  : 0;
+                    double al = _attrCountLoss > 0 ? _attrSumScoresLoss[i] / _attrCountLoss : 0;
+                    Print("  {0,-6}   {1:F2}      {2:F2}       {3:+0.00;-0.00;0.00}",
+                        names[i], aw, al, aw - al);
+                }
+            }
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -1376,6 +1409,41 @@ namespace cAlgo.Robots
                 Print("ACCOUNT PROTECTION: {0} Verluste in Folge. Cooldown aktiviert bis {1:HH:mm}.",
                     _consecutiveLosses, _cooldownEndTime);
                 _consecutiveLosses = 0;
+            }
+
+            // v2.13.0 – P2: Trade Attribution CSV log
+            if (EnableTradeAttributionLog
+                && _currentTrade != null
+                && args.Position.Id == _currentTrade.PositionId
+                && _currentTrade.EntryModuleScores != null)
+            {
+                var   cp     = args.Position;
+                bool  isLong = cp.TradeType == TradeType.Buy;
+                double pnlPips = isLong
+                    ? (cp.ExitPrice - cp.EntryPrice) / Symbol.PipSize
+                    : (cp.EntryPrice - cp.ExitPrice) / Symbol.PipSize;
+                int[] s = _currentTrade.EntryModuleScores;
+                Print("[TRADECSV] {0},{1},{2:F5},{3:F5},{4:F2},{5:F2},{6},{7},{8},{9},{10},{11},{12},{13},{14},{15},{16:F2},{17:F4},{18},{19:F1}",
+                    cp.EntryTime.ToString("O"), cp.TradeType,
+                    cp.EntryPrice, cp.ExitPrice, pnlPips, cp.NetProfit,
+                    s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8],
+                    _currentTrade.EntryTotalScore,
+                    _currentTrade.EntrySpreadPips,
+                    _currentTrade.EntryAtrPips,
+                    _currentTrade.EntryHtfRegime,
+                    _currentTrade.EntryAdxValue);
+
+                bool isWinner = cp.NetProfit >= 0;
+                if (isWinner)
+                {
+                    _attrCountWin++;
+                    for (int i = 0; i < 9; i++) _attrSumScoresWin[i] += s[i];
+                }
+                else
+                {
+                    _attrCountLoss++;
+                    for (int i = 0; i < 9; i++) _attrSumScoresLoss[i] += s[i];
+                }
             }
 
             PersistDailyState();
@@ -2688,6 +2756,28 @@ namespace cAlgo.Robots
             _totalTradesOpened++;
             _tradesToday++;
             PersistDailyState();
+
+            // v2.13.0 – P2: capture entry attribution data for CSV log
+            if (EnableTradeAttributionLog)
+            {
+                int[]  mScores = direction == TradeType.Buy
+                    ? (int[])_cachedLongModuleScores.Clone()
+                    : (int[])_cachedShortModuleScores.Clone();
+                double entrySpread = (Symbol.Ask - Symbol.Bid) / Symbol.PipSize;
+                double entryAtr    = _atrSl != null && !double.IsNaN(_atrSl.Result.Last(1))
+                    ? _atrSl.Result.Last(1) / Symbol.PipSize : 0;
+                string htfRegime = "NA";
+                if (_htfBars != null && _htfEma != null)
+                    htfRegime = _htfBars.ClosePrices.Last(1) > _htfEma.Result.Last(1) ? "BULL" : "BEAR";
+                double adxEntry = _dms != null && !double.IsNaN(_dms.ADX.Last(1)) ? _dms.ADX.Last(1) : 0;
+
+                _currentTrade.EntryModuleScores = mScores;
+                _currentTrade.EntryTotalScore   = score;
+                _currentTrade.EntrySpreadPips   = entrySpread;
+                _currentTrade.EntryAtrPips      = entryAtr;
+                _currentTrade.EntryHtfRegime    = htfRegime;
+                _currentTrade.EntryAdxValue     = adxEntry;
+            }
 
             // v2.8.0: Enhanced Trade Logging – alle Modul-Scores & R:R im Eröffnungslog
             string tpLabel;
