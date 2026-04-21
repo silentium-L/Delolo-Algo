@@ -263,6 +263,10 @@ namespace cAlgo.Robots
             Group = "09 · Module: Fibonacci", DefaultValue = 3, MinValue = 1, MaxValue = 3)]
         public int FiboMaxWeight { get; set; }
 
+        [Parameter("Fibo Use Legacy Range (max/min over full lookback)",
+            Group = "09 · Module: Fibonacci", DefaultValue = false)]
+        public bool FiboUseLegacyRange { get; set; }
+
         // ── 10 · Module: Oscillators ─────────────────────────────────────────
         [Parameter("Enable Oscillators Module",
             Group = "10 · Module: Oscillators", DefaultValue = true)]
@@ -342,6 +346,10 @@ namespace cAlgo.Robots
         [Parameter("Enable Verbose Score Logging",
             Group = "12 · Scoring & Consensus", DefaultValue = false)]
         public bool EnableVerboseScoreLogging { get; set; }
+
+        [Parameter("Block On Conflicting Signals (both Long+Short qualify)",
+            Group = "12 · Scoring & Consensus", DefaultValue = true)]
+        public bool BlockOnConflictingSignals { get; set; }
 
         // ── 12b · Category Caps (v2.12.0) ──────────────────────────────────────
         [Parameter("Enable Category Score Caps",
@@ -534,6 +542,10 @@ namespace cAlgo.Robots
         [Parameter("Enable Reversal Exit",
             Group = "19 · Exit Logic", DefaultValue = true)]
         public bool EnableReversalExit { get; set; }
+
+        [Parameter("Reversal Exit Score Multiplier (1.0=default, 1.1-1.2 = fewer false exits)",
+            Group = "19 · Exit Logic", DefaultValue = 1.0, MinValue = 0.5, MaxValue = 3.0, Step = 0.05)]
+        public double ReversalExitScoreMultiplier { get; set; }
 
         [Parameter("Enable Weekend Protection (Friday close)",
             Group = "19 · Exit Logic", DefaultValue = true)]
@@ -846,6 +858,12 @@ namespace cAlgo.Robots
 
             if (EnableAdxFilter && MinAdxValue > 40.0)
                 Print("WARNING: MinAdxValue={0:F1} ist sehr hoch – blockt ggf. sehr viele Entries.", MinAdxValue);
+
+            if (ReversalExitScoreMultiplier < 1.0)
+                Print("INFO: ReversalExitScoreMultiplier={0:F2} < 1.0 – erleichtert Reversal-Exits.", ReversalExitScoreMultiplier);
+
+            if (!FiboUseLegacyRange)
+                Print("INFO: FiboUseLegacyRange=false – nutzt FindLastImpulseSwing (last coherent swing).");
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -1487,25 +1505,37 @@ namespace cAlgo.Robots
             _cachedLongScore  = longTradable  ? CalculateEntryScore(TradeType.Buy)  : 0;
             _cachedShortScore = shortTradable ? CalculateEntryScore(TradeType.Sell) : 0;
 
-            if (_cachedLongScore >= _minRequiredScore)
+            bool longQualifies  = _cachedLongScore  >= _minRequiredScore;
+            bool shortQualifies = _cachedShortScore >= _minRequiredScore;
+
+            TradeType? selectedDir   = null;
+            int        selectedScore = 0;
+
+            if (longQualifies && shortQualifies)
             {
-                double risk = CalculateRiskPercent(_cachedLongScore);
-                Print("Entry candidate LONG: Score={0}/{1}  Risk={2:F2}%  – calling TryOpenTrade",
-                    _cachedLongScore, _maxPossibleScore, risk);
-                // P3: Score-Breakdown nur bei Entry-Kandidat und VerboseLogging
-                if (EnableVerboseScoreLogging)
-                    LogScoreBreakdown(TradeType.Buy, _cachedLongScore);
-                TryOpenTrade(TradeType.Buy, _cachedLongScore);
+                if (BlockOnConflictingSignals)
+                    Print("OnBar: Both Long ({0}) and Short ({1}) qualify – conflicting signal blocked.",
+                        _cachedLongScore, _cachedShortScore);
+                else if (_cachedLongScore > _cachedShortScore)
+                    { selectedDir = TradeType.Buy;  selectedScore = _cachedLongScore; }
+                else if (_cachedShortScore > _cachedLongScore)
+                    { selectedDir = TradeType.Sell; selectedScore = _cachedShortScore; }
+                else
+                    Print("OnBar: Both qualify with equal scores ({0}) – no trade (tie).", _cachedLongScore);
             }
-            else if (_cachedShortScore >= _minRequiredScore)
+            else if (longQualifies)
+                { selectedDir = TradeType.Buy;  selectedScore = _cachedLongScore; }
+            else if (shortQualifies)
+                { selectedDir = TradeType.Sell; selectedScore = _cachedShortScore; }
+
+            if (selectedDir.HasValue)
             {
-                double risk = CalculateRiskPercent(_cachedShortScore);
-                Print("Entry candidate SHORT: Score={0}/{1}  Risk={2:F2}%  – calling TryOpenTrade",
-                    _cachedShortScore, _maxPossibleScore, risk);
-                // P3: Score-Breakdown nur bei Entry-Kandidat und VerboseLogging
+                double risk = CalculateRiskPercent(selectedScore);
+                Print("Entry candidate {0}: Score={1}/{2}  Risk={3:F2}%  – calling TryOpenTrade",
+                    selectedDir.Value, selectedScore, _maxPossibleScore, risk);
                 if (EnableVerboseScoreLogging)
-                    LogScoreBreakdown(TradeType.Sell, _cachedShortScore);
-                TryOpenTrade(TradeType.Sell, _cachedShortScore);
+                    LogScoreBreakdown(selectedDir.Value, selectedScore);
+                TryOpenTrade(selectedDir.Value, selectedScore);
             }
         }
 
@@ -1993,13 +2023,24 @@ namespace cAlgo.Robots
             double swingHigh = double.MinValue;
             double swingLow  = double.MaxValue;
 
-            foreach (var p in pivots)
+            if (!FiboUseLegacyRange)
             {
-                if (p.IsHigh  && p.Price > swingHigh) swingHigh = p.Price;
-                if (!p.IsHigh && p.Price < swingLow)  swingLow  = p.Price;
+                var (h, l) = FindLastImpulseSwing(direction, pivots);
+                swingHigh = h;
+                swingLow  = l;
             }
 
-            // Fallback: kein Pivot-Paar gefunden
+            // Legacy range OR fallback when FindLastImpulseSwing found no valid pair
+            if (swingHigh == double.MinValue || swingLow == double.MaxValue)
+            {
+                foreach (var p in pivots)
+                {
+                    if (p.IsHigh  && p.Price > swingHigh) swingHigh = p.Price;
+                    if (!p.IsHigh && p.Price < swingLow)  swingLow  = p.Price;
+                }
+            }
+
+            // Last-resort fallback: no pivots at all
             if (swingHigh == double.MinValue || swingLow == double.MaxValue)
             {
                 for (int i = 1; i <= lb; i++)
@@ -2162,13 +2203,14 @@ namespace cAlgo.Robots
             double histNow  = _macd.Histogram.Last(1);  // repaint-safe: closed bar only
             double histPrev = _macd.Histogram.Last(2);  // bar before histNow (closed)
             double sigNow   = _macd.Signal.Last(1);     // repaint-safe: closed bar only
+            double sig2     = _macd.Signal.Last(2);     // bar before sigNow (closed)
 
-            if (double.IsNaN(histNow) || double.IsNaN(histPrev) || double.IsNaN(sigNow))
+            if (double.IsNaN(histNow) || double.IsNaN(histPrev) || double.IsNaN(sigNow) || double.IsNaN(sig2))
                 return 0;
 
             // MACD-Line rekonstruiert aus Histogram + Signal (Standard-Formel)
             double macdNow  = histNow  + sigNow;
-            double macdPrev = histPrev + _macd.Signal.Last(2); // bar before sigNow (closed)
+            double macdPrev = histPrev + sig2;
 
             int pts = 0;
 
@@ -2362,6 +2404,52 @@ namespace cAlgo.Robots
 
             return result;
         }
+        // ─────────────────────────────────────────────────────────────────────
+        //  FindLastImpulseSwing
+        //  Finds the most recent coherent impulse move instead of max/min over
+        //  the entire lookback (which spans multiple unrelated swings).
+        //  LONG : last down-impulse (pivot-high → subsequent pivot-low)
+        //  SHORT: last up-impulse  (pivot-low  → subsequent pivot-high)
+        //  Returns (swingHigh, swingLow); (MinValue, MaxValue) on failure.
+        // ─────────────────────────────────────────────────────────────────────
+        private (double high, double low) FindLastImpulseSwing(TradeType direction, List<PivotPoint> pivots)
+        {
+            if (direction == TradeType.Buy)
+            {
+                PivotPoint lastLow = null;
+                foreach (var p in pivots)
+                    if (!p.IsHigh && (lastLow == null || p.Index < lastLow.Index))
+                        lastLow = p;
+                if (lastLow == null) return (double.MinValue, double.MaxValue);
+
+                PivotPoint priorHigh = null;
+                foreach (var p in pivots)
+                    if (p.IsHigh && p.Index > lastLow.Index
+                        && (priorHigh == null || p.Index < priorHigh.Index))
+                        priorHigh = p;
+                if (priorHigh == null) return (double.MinValue, double.MaxValue);
+
+                return (priorHigh.Price, lastLow.Price);
+            }
+            else
+            {
+                PivotPoint lastHigh = null;
+                foreach (var p in pivots)
+                    if (p.IsHigh && (lastHigh == null || p.Index < lastHigh.Index))
+                        lastHigh = p;
+                if (lastHigh == null) return (double.MinValue, double.MaxValue);
+
+                PivotPoint priorLow = null;
+                foreach (var p in pivots)
+                    if (!p.IsHigh && p.Index > lastHigh.Index
+                        && (priorLow == null || p.Index < priorLow.Index))
+                        priorLow = p;
+                if (priorLow == null) return (double.MinValue, double.MaxValue);
+
+                return (lastHigh.Price, priorLow.Price);
+            }
+        }
+
         private double CalculateRiskPercent(int score)
         {
             if (_maxPossibleScore == _minRequiredScore)
@@ -3022,10 +3110,11 @@ namespace cAlgo.Robots
                     _lastCounterScoreBarTime = curBarTime;
                 }
 
-                if (_cachedCounterScore >= _minRequiredScore)
+                int reversalThreshold = (int)Math.Ceiling(_minRequiredScore * ReversalExitScoreMultiplier);
+                if (_cachedCounterScore >= reversalThreshold)
                 {
-                    Print("Reversal exit [{0}]: Counter-direction score {1}/{2} >= {3}. Closing.",
-                        isLong ? "Long" : "Short", _cachedCounterScore, _maxPossibleScore, _minRequiredScore);
+                    Print("Reversal exit [{0}]: Counter-direction score {1}/{2} >= {3} (threshold). Closing.",
+                        isLong ? "Long" : "Short", _cachedCounterScore, _maxPossibleScore, reversalThreshold);
                     ForceCloseCurrentTrade("Reversal");
                     return;
                 }
