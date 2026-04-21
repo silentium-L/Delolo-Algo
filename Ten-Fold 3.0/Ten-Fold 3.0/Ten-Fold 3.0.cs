@@ -1382,7 +1382,7 @@ namespace cAlgo.Robots
             if ((EnableHtfFilter || EnableHtfBreakExit) && _htfBars != null && _htfEma != null)
             {
                 double htfClose = _htfBars.ClosePrices.Last(1);
-                double htfEma   = _htfEma.Result.LastValue;
+                double htfEma   = _htfEma.Result.Last(1); // closed bar – no repaint
                 htfStatus = htfClose > htfEma ? "▲ BULL" : "▼ BEAR";
             }
 
@@ -1630,7 +1630,7 @@ namespace cAlgo.Robots
             if (EnableHtfFilter && _htfBars != null && _htfEma != null)
             {
                 double htfClose = _htfBars.ClosePrices.Last(1);
-                double htfEma   = _htfEma.Result.LastValue;
+                double htfEma   = _htfEma.Result.Last(1); // closed bar – no repaint
 
                 if (direction == TradeType.Buy && htfClose < htfEma)
                 {
@@ -2388,7 +2388,7 @@ namespace cAlgo.Robots
                     break;
 
                 case SlMethod.AtrBased:
-                    double atr = _atrSl.Result.LastValue;
+                    double atr = _atrSl.Result.Last(1); // closed bar – no repaint
                     if (double.IsNaN(atr) || atr <= 0)
                     {
                         Print("CalculateSlPips: ATR value invalid ({0:F6}). Skipping trade.", atr);
@@ -2403,7 +2403,7 @@ namespace cAlgo.Robots
                     if (swingLevel < 0)
                     {
                         Print("CalculateSlPips: No swing found in {0} bars – falling back to ATR.", SwingSlLookback);
-                        double atrFb = _atrSl.Result.LastValue;
+                        double atrFb = _atrSl.Result.Last(1);
                         slPips = (atrFb / Symbol.PipSize) * AtrSlMultiplier + SlBufferPips;
                     }
                     else
@@ -2448,7 +2448,7 @@ namespace cAlgo.Robots
                     return slPips * RrrTarget;
 
                 case TpMethod.AtrMultiplier:
-                    double atr = _atrSl.Result.LastValue;
+                    double atr = _atrSl.Result.Last(1); // closed bar – no repaint
                     if (double.IsNaN(atr) || atr <= 0)
                     {
                         Print("CalculateTpPips: ATR invalid – falling back to RRR.");
@@ -2570,7 +2570,7 @@ namespace cAlgo.Robots
                 && IntervalTpBasis == IntervalBasis.AtrMultiple
                 && _atrSl != null)
             {
-                atrAtEntry = _atrSl.Result.LastValue;
+                atrAtEntry = _atrSl.Result.Last(1); // closed bar – no repaint
                 if (double.IsNaN(atrAtEntry) || atrAtEntry <= 0)
                 {
                     Print("TryOpenTrade: IntervalLot/ATR mode requested but ATR invalid ({0:F6}) – skipping.", atrAtEntry);
@@ -2846,7 +2846,7 @@ namespace cAlgo.Robots
         {
             if (_atrChandelier == null) return;
 
-            double atr = _atrChandelier.Result.LastValue;
+            double atr = _atrChandelier.Result.Last(1); // closed bar – no repaint
             if (double.IsNaN(atr) || atr <= 0) return;
 
             double newSl;
@@ -2881,7 +2881,7 @@ namespace cAlgo.Robots
         {
             if (_trailingEma == null) return;
 
-            double emaValue = _trailingEma.Result.LastValue;
+            double emaValue = _trailingEma.Result.Last(1); // closed bar – no repaint
             if (double.IsNaN(emaValue)) return;
 
             double lastClose    = Bars.ClosePrices.Last(1);
@@ -2938,7 +2938,7 @@ namespace cAlgo.Robots
             if (EnableHtfBreakExit && _htfBars != null && _htfEma != null)
             {
                 double htfClose  = _htfBars.ClosePrices.Last(1);
-                double htfEma    = _htfEma.Result.LastValue;
+                double htfEma    = _htfEma.Result.Last(1); // closed bar – no repaint
                 bool   htfBroken = isLong ? htfClose < htfEma : htfClose > htfEma;
 
                 if (htfBroken)
@@ -2953,7 +2953,7 @@ namespace cAlgo.Robots
             // ── c) RSI Panic Exit ─────────────────────────────────────────────
             if (EnableRsiPanicExit && _rsi != null)
             {
-                double rsiValue   = _rsi.Result.LastValue;
+                double rsiValue   = _rsi.Result.Last(1); // closed bar – no repaint
                 bool   panicLong  = isLong  && rsiValue > RsiPanicLong;
                 bool   panicShort = !isLong && rsiValue < RsiPanicShort;
 
@@ -2991,7 +2991,7 @@ namespace cAlgo.Robots
                     if (_htfBars != null && _htfEma != null)
                     {
                         double htfClose = _htfBars.ClosePrices.Last(1);
-                        double htfEma   = _htfEma.Result.LastValue;
+                        double htfEma   = _htfEma.Result.Last(1); // closed bar – no repaint
                         htfBrokenForSwap = isLong ? htfClose < htfEma : htfClose > htfEma;
                     }
 
@@ -3069,7 +3069,7 @@ namespace cAlgo.Robots
             if (_htfBars != null && _htfEma != null)
             {
                 double htfClose = _htfBars.ClosePrices.Last(1);
-                double htfEma   = _htfEma.Result.LastValue;
+                double htfEma   = _htfEma.Result.Last(1); // closed bar – no repaint
                 htfStr = string.Format("{0:F5} vs EMA {1:F5} → {2}",
                     htfClose, htfEma, htfClose > htfEma ? "BULL" : "BEAR");
             }
