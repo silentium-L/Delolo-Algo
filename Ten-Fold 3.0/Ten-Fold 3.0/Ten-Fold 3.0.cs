@@ -2,7 +2,7 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  2.11.0 (Added MACD scoring module + ADX trend-strength filter)
+//  Version      │  2.12.0 (ObjectStore persistence + FloatingLossMode option)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 using System;
@@ -21,6 +21,9 @@ namespace cAlgo.Robots
 
     // Basis für Risikoberechnung
     public enum RiskBase { Balance, Equity }
+
+    // Floating Loss Gate Mode für IsMarketTradable
+    public enum FloatingLossGateMode { FloatingLossOnly, NetUnrealised }
 
     internal class TimeWindow
     {
@@ -578,6 +581,10 @@ namespace cAlgo.Robots
             Group = "20 · Account Protection", DefaultValue = 4.0, MinValue = 0.1, MaxValue = 100.0, Step = 0.1)]
         public double MaxFloatingLossPercent { get; set; }
 
+        [Parameter("Floating Loss Gate Mode",
+            Group = "20 · Account Protection", DefaultValue = FloatingLossGateMode.FloatingLossOnly)]
+        public FloatingLossGateMode FloatingLossMode { get; set; }
+
         [Parameter("Max Trades per Day (0 = off)",
             Group = "20 · Account Protection", DefaultValue = 3, MinValue = 0)]
         public int MaxTradesPerDay { get; set; }
@@ -634,6 +641,7 @@ namespace cAlgo.Robots
         private int      _tradesToday;
         private int      _consecutiveLosses;
         private DateTime _cooldownEndTime = DateTime.MinValue;
+        private bool     _persistedTodayLoaded;
         private List<TimeWindow> _parsedNewsWindows = new List<TimeWindow>();
         private Bars     _dailyBars;
 
@@ -686,7 +694,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v2.11.0 │  Starting           ║");
+            Print("║   10-Fold Bot  v2.12.0 │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -709,7 +717,8 @@ namespace cAlgo.Robots
                 RecoverExistingPosition();
             }
 
-            ResetDailyState();
+            LoadPersistedState();
+            ResetDailyState(isOnStartCall: true);
 
             if (ShowDashboard)
                 InitializeDashboard();
@@ -1103,24 +1112,112 @@ namespace cAlgo.Robots
         }
 
         // ─────────────────────────────────────────────────────────────────────
+        //  LoadPersistedState – ObjectStore
+        // ─────────────────────────────────────────────────────────────────────
+        private void LoadPersistedState()
+        {
+            _persistedTodayLoaded = false;
+            string dateKey = Server.Time.ToString("yyyyMMdd");
+
+            try
+            {
+                string equityKey = "10fold_equity_" + dateKey;
+                string tradesKey = "10fold_trades_" + dateKey;
+                string lossKey   = "10fold_consecloss";
+                string cooldownKey = "10fold_cooldown";
+
+                object equityObj = ObjectStore.GetValue(equityKey);
+                object tradesObj = ObjectStore.GetValue(tradesKey);
+                object lossObj   = ObjectStore.GetValue(lossKey);
+                object cooldownObj = ObjectStore.GetValue(cooldownKey);
+
+                bool loaded = false;
+                if (equityObj != null && double.TryParse(equityObj.ToString(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double equity))
+                {
+                    _dayStartEquity = equity;
+                    loaded = true;
+                }
+
+                if (tradesObj != null && int.TryParse(tradesObj.ToString(), out int trades))
+                {
+                    _tradesToday = trades;
+                }
+
+                if (lossObj != null && int.TryParse(lossObj.ToString(), out int loss))
+                {
+                    _consecutiveLosses = loss;
+                }
+
+                if (cooldownObj != null && DateTime.TryParseExact(cooldownObj.ToString(), "O",
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out DateTime cooldown))
+                {
+                    if (cooldown > Server.Time)
+                        _cooldownEndTime = cooldown;
+                }
+
+                if (loaded)
+                {
+                    _persistedTodayLoaded = true;
+                    Print("  [✓] Loaded persisted daily state: Equity={0:F2} {1}, Trades={2}, ConsecLoss={3}",
+                        _dayStartEquity, Account.Asset.Name, _tradesToday, _consecutiveLosses);
+                }
+            }
+            catch (Exception ex)
+            {
+                Print("  [!] LoadPersistedState error: {0}", ex.Message);
+                _persistedTodayLoaded = false;
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  PersistDailyState – ObjectStore
+        // ─────────────────────────────────────────────────────────────────────
+        private void PersistDailyState()
+        {
+            try
+            {
+                string dateKey = Server.Time.ToString("yyyyMMdd");
+                string equityKey = "10fold_equity_" + dateKey;
+                string tradesKey = "10fold_trades_" + dateKey;
+                string lossKey   = "10fold_consecloss";
+
+                ObjectStore.SetValue(equityKey, _dayStartEquity.ToString("F4", System.Globalization.CultureInfo.InvariantCulture));
+                ObjectStore.SetValue(tradesKey, _tradesToday.ToString());
+                ObjectStore.SetValue(lossKey, _consecutiveLosses.ToString());
+
+                if (_cooldownEndTime > Server.Time)
+                    ObjectStore.SetValue("10fold_cooldown", _cooldownEndTime.ToString("O"));
+            }
+            catch (Exception ex)
+            {
+                Print("  [!] PersistDailyState error: {0}", ex.Message);
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
         //  ResetDailyState
         // ─────────────────────────────────────────────────────────────────────
-        private void ResetDailyState()
+        private void ResetDailyState(bool isOnStartCall = false)
         {
-            // P7: Beim allerersten Reset nach OnStart einen Hinweis ausgeben
             bool isFirstReset = (_lastDailyResetDate == DateTime.MinValue);
-            if (isFirstReset)
+            if (isFirstReset && !isOnStartCall)
                 Print("INFO: Daily-DD-Zähler startet neu. Falls der Bot mitten am Tag gestartet wurde, " +
-                      "beginnt die DD-Berechnung ab jetzt (keine Persistenz über Restarts).");
+                      "beginnt die DD-Berechnung ab jetzt.");
 
-            _dayStartEquity         = Account.Equity;
+            if (!(isOnStartCall && _persistedTodayLoaded))
+                _dayStartEquity = Account.Equity;
+            if (!(isOnStartCall && _persistedTodayLoaded))
+                _tradesToday = 0;
+
             _dailyDrawdownBreached  = false;
             _rolloverCheckDoneToday = false;
             _weekendCloseFired      = false;
-            _tradesToday            = 0;
             _lastDailyResetDate     = Server.Time;
-            // _currentTrade wird NICHT gecleart – ein laufender Trade
-            // überlebt den Tageswechsel. Nur tagesgebundene Flags resetten.
+
+            PersistDailyState();
+
             if (_currentTrade == null)
                 Print("  Daily reset  Equity={0:F2} {1}  Date={2:yyyy-MM-dd} (no open trade)",
                     _dayStartEquity, Account.Asset.Name, Server.Time);
@@ -1262,6 +1359,8 @@ namespace cAlgo.Robots
                     _consecutiveLosses, _cooldownEndTime);
                 _consecutiveLosses = 0;
             }
+
+            PersistDailyState();
         }
 
         private const string DashboardKey = "10FoldDashboard";
@@ -1545,14 +1644,18 @@ namespace cAlgo.Robots
                 }
             }
 
-            // Summiert nur negative NetProfit-Werte (Floating Losses), kein klassisches Notional-Exposure
+            // FloatingLossMode supports two modes: FloatingLossOnly (default) or NetUnrealised (all positions)
             double totalUnrealised = 0;
             foreach (var pos in Positions)
             {
                 if (pos.SymbolName == SymbolName)
-                    totalUnrealised += pos.NetProfit < 0 ? Math.Abs(pos.NetProfit) : 0;
+                {
+                    double contrib = FloatingLossMode == FloatingLossGateMode.FloatingLossOnly
+                        ? (pos.NetProfit < 0 ? Math.Abs(pos.NetProfit) : 0)
+                        : Math.Abs(pos.NetProfit);
+                    totalUnrealised += contrib;
+                }
             }
-            // v2.9.0 – Guard gegen Division durch 0 bei leerem/unentfinierten Account
             double exposurePct = Account.Balance > 0
                 ? (totalUnrealised / Account.Balance) * 100.0 : 0;
             if (exposurePct >= MaxFloatingLossPercent)
@@ -2496,6 +2599,7 @@ namespace cAlgo.Robots
 
             _totalTradesOpened++;
             _tradesToday++;
+            PersistDailyState();
 
             // v2.8.0: Enhanced Trade Logging – alle Modul-Scores & R:R im Eröffnungslog
             string tpLabel;
