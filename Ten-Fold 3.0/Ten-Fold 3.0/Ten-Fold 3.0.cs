@@ -137,6 +137,14 @@ namespace cAlgo.Robots
             Group = "01c · ADX Trend Strength", DefaultValue = true)]
         public bool RequireDiAlignment { get; set; }
 
+        [Parameter("Enable ADX as Score Module (in addition to Gate)",
+            Group = "01c · ADX Trend Strength", DefaultValue = false)]
+        public bool EnableAdxScoreModule { get; set; }
+
+        [Parameter("ADX Score Max Points (1–3)",
+            Group = "01c · ADX Trend Strength", DefaultValue = 2, MinValue = 1, MaxValue = 3)]
+        public int AdxScoreMaxWeight { get; set; }
+
         // ── 02 · Spread Protection ───────────────────────────────────────────
         [Parameter("Max Allowed Spread (Pips)",
             Group = "02 · Spread Protection", DefaultValue = 2.0, MinValue = 0.1, Step = 0.1)]
@@ -328,6 +336,27 @@ namespace cAlgo.Robots
         [Parameter("Enable Verbose Score Logging",
             Group = "12 · Scoring & Consensus", DefaultValue = false)]
         public bool EnableVerboseScoreLogging { get; set; }
+
+        // ── 12b · Category Caps (v2.12.0) ──────────────────────────────────────
+        [Parameter("Enable Category Score Caps",
+            Group = "12b · Category Caps", DefaultValue = false)]
+        public bool EnableCategoryCaps { get; set; }
+
+        [Parameter("Trend Cap – EMA+ST+MACD max",
+            Group = "12b · Category Caps", DefaultValue = 3, MinValue = 1, MaxValue = 9)]
+        public int TrendCategoryCap { get; set; }
+
+        [Parameter("MeanReversion Cap – BB+FIB+SR max",
+            Group = "12b · Category Caps", DefaultValue = 3, MinValue = 1, MaxValue = 9)]
+        public int MeanReversionCategoryCap { get; set; }
+
+        [Parameter("Momentum Cap – OSC max",
+            Group = "12b · Category Caps", DefaultValue = 3, MinValue = 1, MaxValue = 3)]
+        public int MomentumCategoryCap { get; set; }
+
+        [Parameter("PriceAction Cap – Patterns max",
+            Group = "12b · Category Caps", DefaultValue = 3, MinValue = 1, MaxValue = 3)]
+        public int PriceActionCategoryCap { get; set; }
 
         // ── 13 · Position Sizing & Risk ──────────────────────────────────────
         [Parameter("Min Risk % of Balance (at Min-Score)",
@@ -629,8 +658,8 @@ namespace cAlgo.Robots
         private readonly Dictionary<int, List<PivotPoint>> _pivotCache = new Dictionary<int, List<PivotPoint>>();
 
         // v2.12.0 – Module-Score-Cache: LogScoreBreakdown liest aus Cache statt neu zu rechnen
-        private int[] _cachedLongModuleScores  = new int[8]; // EMA,BB,ST,PA,FIB,OSC,SR,MACD
-        private int[] _cachedShortModuleScores = new int[8];
+        private int[] _cachedLongModuleScores  = new int[9]; // EMA,BB,ST,PA,FIB,OSC,SR,MACD,ADX
+        private int[] _cachedShortModuleScores = new int[9];
 
         // v2.12.0 – VWAP incremental: statt O(480) Loop wird O(1) pro Bar
         private double   _vwapSumTpVol    = 0;
@@ -863,10 +892,14 @@ namespace cAlgo.Robots
                 Print("  [✓] MACD  Long={0} Short={1} Signal={2}", MacdLongCycle, MacdShortCycle, MacdSignalPeriods);
             }
 
-            if (EnableAdxFilter)
+            if (EnableAdxFilter || EnableAdxScoreModule)
             {
                 _dms = Indicators.DirectionalMovementSystem(AdxPeriod);
-                Print("  [✓] ADX   Period={0} MinValue={1:F1} DIAlign={2}", AdxPeriod, MinAdxValue, RequireDiAlignment);
+                string role = "";
+                if (EnableAdxFilter && EnableAdxScoreModule) role = "Gate+Module";
+                else if (EnableAdxFilter) role = "Gate";
+                else role = "Module";
+                Print("  [✓] ADX   Period={0} Role={1}", AdxPeriod, role);
             }
         }
 
@@ -1024,6 +1057,25 @@ namespace cAlgo.Robots
             if (EnableOscModule)        _maxPossibleScore += OscMaxWeight;
             if (EnableSrModule)         _maxPossibleScore += SrMaxWeight;
             if (EnableMacdModule)       _maxPossibleScore += MacdMaxWeight;
+            if (EnableAdxScoreModule)   _maxPossibleScore += AdxScoreMaxWeight;
+
+            // v2.12.0 – Category Caps: recompute max if enabled
+            if (EnableCategoryCaps)
+            {
+                int trendMax = (EnableEmaModule ? EmaMaxWeight : 0) +
+                               (EnableSupertrendModule ? SupertrendMaxWeight : 0) +
+                               (EnableMacdModule ? MacdMaxWeight : 0);
+                int mrMax    = (EnableBbModule ? BbMaxWeight : 0) +
+                               (EnableFiboModule ? FiboMaxWeight : 0) +
+                               (EnableSrModule ? SrMaxWeight : 0);
+                int momMax   = EnableOscModule ? OscMaxWeight : 0;
+                int paMax    = EnablePatternsModule ? PatternsMaxWeight : 0;
+
+                _maxPossibleScore = Math.Min(trendMax, TrendCategoryCap) +
+                                    Math.Min(mrMax,    MeanReversionCategoryCap) +
+                                    Math.Min(momMax,   MomentumCategoryCap) +
+                                    Math.Min(paMax,    PriceActionCategoryCap);
+            }
 
             if (_maxPossibleScore == 0)
             {
@@ -1033,7 +1085,9 @@ namespace cAlgo.Robots
             }
 
             _minRequiredScore = (int)Math.Ceiling(_maxPossibleScore * ConsensusRatio);
-            Print("  Thresholds: Max={0} MinRequired={1} ({2:P0})", _maxPossibleScore, _minRequiredScore, ConsensusRatio);
+            string capInfo = EnableCategoryCaps ? string.Format(" [Caps: T={0} MR={1} M={2} PA={3}]",
+                TrendCategoryCap, MeanReversionCategoryCap, MomentumCategoryCap, PriceActionCategoryCap) : "";
+            Print("  Thresholds: Max={0} MinRequired={1} ({2:P0}){3}", _maxPossibleScore, _minRequiredScore, ConsensusRatio, capInfo);
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -1559,6 +1613,24 @@ namespace cAlgo.Robots
             score += cache[6];
             cache[7] = EnableMacdModule       ? ScoreMacd(direction, logVerbose) : 0;
             score += cache[7];
+            cache[8] = EnableAdxScoreModule && _dms != null ? ScoreAdx(direction, logVerbose) : 0;
+            score += cache[8];
+
+            // v2.12.0 – Apply category caps if enabled
+            if (EnableCategoryCaps)
+            {
+                int trendRaw = cache[0] + cache[2] + cache[7]; // EMA + ST + MACD
+                int mrRaw    = cache[1] + cache[4] + cache[6]; // BB + FIB + SR
+                int momRaw   = cache[5];                        // OSC
+                int paRaw    = cache[3];                        // PA
+
+                int trendCapped = Math.Min(trendRaw, TrendCategoryCap);
+                int mrCapped    = Math.Min(mrRaw,    MeanReversionCategoryCap);
+                int momCapped   = Math.Min(momRaw,   MomentumCategoryCap);
+                int paCapped    = Math.Min(paRaw,    PriceActionCategoryCap);
+
+                score = trendCapped + mrCapped + momCapped + paCapped;
+            }
 
             if (EnableVerboseScoreLogging && logVerbose)
                 Print("Score [{0}]: EMA+BB+ST+PA+FIB+OSC+SR+MACD = {1}/{2}", direction, score, _maxPossibleScore);
@@ -2003,6 +2075,44 @@ namespace cAlgo.Robots
                     direction, macdNow, sigNow, histNow, histPrev, pts);
 
             return Math.Min(pts, MacdMaxWeight);
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        //  SCORING MODULE: ADX (v2.12.0)
+        //  (1) ADX >= MinAdxValue: basic trend present
+        //  (2) ADX >= 25: strong trend zone
+        //  (3) DI+ > DI- (long) / DI- > DI+ (short): direction confirmation
+        // ════════════════════════════════════════════════════════════════════
+        private int ScoreAdx(TradeType direction, bool logVerbose = true)
+        {
+            if (_dms == null) return 0;
+
+            double adxVal  = _dms.ADX.Last(1);  // repaint-safe: closed bar only
+            double diPlus  = _dms.DIPlus.Last(1);  // repaint-safe: closed bar only
+            double diMinus = _dms.DIMinus.Last(1); // repaint-safe: closed bar only
+
+            if (double.IsNaN(adxVal)) return 0;
+
+            int pts = 0;
+
+            // (1) ADX above minimum (basic trend present)
+            if (adxVal >= MinAdxValue) pts++;
+
+            // (2) ADX in "strong trend" zone (above 25 typical threshold)
+            if (adxVal >= 25.0) pts++;
+
+            // (3) DI alignment matches direction
+            if (!double.IsNaN(diPlus) && !double.IsNaN(diMinus))
+            {
+                bool aligned = direction == TradeType.Buy ? diPlus > diMinus : diMinus > diPlus;
+                if (aligned) pts++;
+            }
+
+            if (EnableVerboseScoreLogging && logVerbose)
+                Print("  [ADX] dir={0} adx={1:F1} DI+={2:F1} DI-={3:F1} pts={4}",
+                    direction, adxVal, diPlus, diMinus, pts);
+
+            return Math.Min(pts, AdxScoreMaxWeight);
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -2837,7 +2947,7 @@ namespace cAlgo.Robots
         {
             int[] cache = direction == TradeType.Buy ? _cachedLongModuleScores : _cachedShortModuleScores;
             Print("[ScoreBreakdown {0}] Total={1}/{2} (min={3}) | " +
-                  "EMA={4} BB={5} ST={6} PA={7} FIB={8} OSC={9} SR={10} MACD={11}",
+                  "EMA={4} BB={5} ST={6} PA={7} FIB={8} OSC={9} SR={10} MACD={11} ADX={12}",
                 direction, totalScore, _maxPossibleScore, _minRequiredScore,
                 EnableEmaModule        ? cache[0].ToString() : "off",
                 EnableBbModule         ? cache[1].ToString() : "off",
@@ -2846,7 +2956,8 @@ namespace cAlgo.Robots
                 EnableFiboModule       ? cache[4].ToString() : "off",
                 EnableOscModule        ? cache[5].ToString() : "off",
                 EnableSrModule         ? cache[6].ToString() : "off",
-                EnableMacdModule       ? cache[7].ToString() : "off");
+                EnableMacdModule       ? cache[7].ToString() : "off",
+                EnableAdxScoreModule   ? cache[8].ToString() : "off");
         }
 
         private void LogTradeState()
