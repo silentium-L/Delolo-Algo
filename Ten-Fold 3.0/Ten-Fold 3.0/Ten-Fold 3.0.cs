@@ -2,7 +2,7 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  2.10.0 (Tuned Defaults: Risk-Profile optimized, earlier BE, tighter protection)
+//  Version      │  2.11.0 (Added MACD scoring module + ADX trend-strength filter)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 using System;
@@ -117,6 +117,25 @@ namespace cAlgo.Robots
         [Parameter("News Time Windows",
             Group = "01b · Volatility & News", DefaultValue = "14:15-14:45, 15:45-16:15")]
         public string NewsTimeWindows { get; set; }
+
+        // ── 01c · ADX Trend Strength Filter ──────────────────────────────────
+        //  Gate (kein Score-Modul): blockiert Entries wenn ADX unter Schwelle
+        //  (Chop-Market). Ergänzt Trend- und MR-Signale, ohne doppelt zu zählen.
+        [Parameter("Enable ADX Trend Strength Filter",
+            Group = "01c · ADX Trend Strength", DefaultValue = false)]
+        public bool EnableAdxFilter { get; set; }
+
+        [Parameter("ADX Period",
+            Group = "01c · ADX Trend Strength", DefaultValue = 14, MinValue = 2, MaxValue = 200)]
+        public int AdxPeriod { get; set; }
+
+        [Parameter("Min ADX for new Entries (0–100)",
+            Group = "01c · ADX Trend Strength", DefaultValue = 20.0, MinValue = 0.0, MaxValue = 100.0, Step = 1.0)]
+        public double MinAdxValue { get; set; }
+
+        [Parameter("Require DI Alignment (DI+>DI- for Long etc.)",
+            Group = "01c · ADX Trend Strength", DefaultValue = true)]
+        public bool RequireDiAlignment { get; set; }
 
         // ── 02 · Spread Protection ───────────────────────────────────────────
         [Parameter("Max Allowed Spread (Pips)",
@@ -276,6 +295,31 @@ namespace cAlgo.Robots
             Group = "11 · Module: S/R + VWAP", DefaultValue = 3, MinValue = 1, MaxValue = 3)]
         public int SrMaxWeight { get; set; }
 
+        // ── 11b · Module: MACD ───────────────────────────────────────────────
+        //  3-Punkte-Scoring:
+        //   (1) Context : MACD-Line vs Signal (bullish/bearish Basis)
+        //   (2) Strength: Histogram wächst in Richtung (Momentum beschleunigt)
+        //   (3) Timing  : Histogram hat gerade die Nulllinie in Richtung gekreuzt
+        [Parameter("Enable MACD Module",
+            Group = "11b · Module: MACD", DefaultValue = true)]
+        public bool EnableMacdModule { get; set; }
+
+        [Parameter("MACD Long Cycle",
+            Group = "11b · Module: MACD", DefaultValue = 26, MinValue = 2, MaxValue = 200)]
+        public int MacdLongCycle { get; set; }
+
+        [Parameter("MACD Short Cycle",
+            Group = "11b · Module: MACD", DefaultValue = 12, MinValue = 2, MaxValue = 200)]
+        public int MacdShortCycle { get; set; }
+
+        [Parameter("MACD Signal Periods",
+            Group = "11b · Module: MACD", DefaultValue = 9, MinValue = 1, MaxValue = 100)]
+        public int MacdSignalPeriods { get; set; }
+
+        [Parameter("MACD Max Points (1–3)",
+            Group = "11b · Module: MACD", DefaultValue = 3, MinValue = 1, MaxValue = 3)]
+        public int MacdMaxWeight { get; set; }
+
         // ── 12 · Scoring & Consensus ─────────────────────────────────────────
         [Parameter("Consensus Ratio (0.30–1.00)",
             Group = "12 · Scoring & Consensus", DefaultValue = 0.70, MinValue = 0.30, MaxValue = 1.0, Step = 0.05)]
@@ -298,14 +342,6 @@ namespace cAlgo.Robots
         [Parameter("Risk Base",
             Group = "13 · Position Sizing & Risk", DefaultValue = RiskBase.Balance)]
         public RiskBase RiskBaseMode { get; set; }
-
-        [Parameter("Min Lot Size (Hard Floor)",
-            Group = "13 · Position Sizing & Risk", DefaultValue = 0.01, MinValue = 0.01, Step = 0.01)]
-        public double MinLotSize { get; set; }
-
-        [Parameter("Max Lot Size (Hard Cap)",
-            Group = "13 · Position Sizing & Risk", DefaultValue = 5.0, MinValue = 0.01, Step = 0.01)]
-        public double MaxLotSize { get; set; }
 
         // ── 14 · Stop Loss ───────────────────────────────────────────────────
         [Parameter("SL Calculation Method",
@@ -538,6 +574,8 @@ namespace cAlgo.Robots
         private Bars                   _htfBars;
         private MovingAverage          _htfEma;
         private AverageTrueRange       _atrSupertrend;
+        private MacdHistogram          _macd;
+        private DirectionalMovementSystem _dms;
 
         // ════════════════════════════════════════════════════════════════════
         //  PRIVATE FIELDS – State
@@ -594,7 +632,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v2.10.0 │  Starting           ║");
+            Print("║   10-Fold Bot  v2.11.0 │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -651,7 +689,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v2.10.0 │  Stopped            ║");
+            Print("║   10-Fold Bot  v2.11.0 │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -678,13 +716,6 @@ namespace cAlgo.Robots
                 double tmp = MinRiskPercent;
                 MinRiskPercent = MaxRiskPercent;
                 MaxRiskPercent = tmp;
-            }
-
-            if (MinLotSize > MaxLotSize)
-            {
-                Print("ERROR: MinLotSize ({0}) > MaxLotSize ({1}). Bot entering Standby!", MinLotSize, MaxLotSize);
-                _botInStandby = true;
-                return;
             }
 
             if (EnableEmaModule && EmaFastPeriod >= EmaSlowPeriod)
@@ -715,13 +746,15 @@ namespace cAlgo.Robots
             // v2.8.0 – Validation für Interval-Lot-TP
             if (TakeProfitMethod == TpMethod.IntervalLot)
             {
-                if (LotsPerInterval < MinLotSize)
-                    Print("WARNING: LotsPerInterval ({0:F2}) < MinLotSize ({1:F2}) – kann zu gescheiterten Teilschließungen führen.",
-                        LotsPerInterval, MinLotSize);
+                double brokerMinLots = Symbol.VolumeInUnitsMin / Symbol.LotSize;
 
-                if (MinRunnerLots > 0 && MinRunnerLots < MinLotSize)
-                    Print("WARNING: MinRunnerLots ({0:F2}) < MinLotSize ({1:F2}) – setze entweder 0 oder >= MinLotSize.",
-                        MinRunnerLots, MinLotSize);
+                if (LotsPerInterval < brokerMinLots)
+                    Print("WARNING: LotsPerInterval ({0:F2}) < Broker-Min ({1:F2}) – kann zu gescheiterten Teilschließungen führen.",
+                        LotsPerInterval, brokerMinLots);
+
+                if (MinRunnerLots > 0 && MinRunnerLots < brokerMinLots)
+                    Print("WARNING: MinRunnerLots ({0:F2}) < Broker-Min ({1:F2}) – setze entweder 0 oder >= Broker-Min.",
+                        MinRunnerLots, brokerMinLots);
 
                 if (IntervalTpBasis == IntervalBasis.Pips && IntervalPips < 1.0)
                     Print("WARNING: IntervalPips={0:F2} ist sehr klein – kann zu Over-Trading führen.", IntervalPips);
@@ -738,6 +771,18 @@ namespace cAlgo.Robots
             if (EnableEmaModule && EnableSupertrendModule)
                 Print("INFO: EMA- und Supertrend-Modul messen beide Trend → können redundant sein. " +
                       "Evtl. nur eines aktivieren oder Max-Weights reduzieren.");
+
+            // v2.11.0 – MACD/ADX-Validation
+            if (EnableMacdModule && MacdShortCycle >= MacdLongCycle)
+                Print("WARNING: MACD Short ({0}) >= Long ({1}) – MACD-Linie wird invertiert.",
+                    MacdShortCycle, MacdLongCycle);
+
+            if (EnableMacdModule && (EnableEmaModule || EnableSupertrendModule))
+                Print("INFO: MACD + EMA/Supertrend aktiv → Trend/Momentum wird mehrfach gewichtet. " +
+                      "Für Pullback/MR evtl. MacdMaxWeight reduzieren.");
+
+            if (EnableAdxFilter && MinAdxValue > 40.0)
+                Print("WARNING: MinAdxValue={0:F1} ist sehr hoch – blockt ggf. sehr viele Entries.", MinAdxValue);
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -761,6 +806,7 @@ namespace cAlgo.Robots
             if (EnableSupertrendModule)
             {
                 _atrSupertrend = Indicators.AverageTrueRange(SupertrendAtrPeriod, MovingAverageType.WilderSmoothing);
+                WarmUpSupertrendState();
                 Print("  [✓] Supertrend ATR  Period={0} Factor={1}", SupertrendAtrPeriod, SupertrendFactor);
             }
 
@@ -796,6 +842,64 @@ namespace cAlgo.Robots
                 _htfEma  = Indicators.MovingAverage(_htfBars.ClosePrices, HtfEmaPeriod, MovingAverageType.Exponential);
                 Print("  [✓] HTF  TF={0} EMA={1}", HtfTimeFrame, HtfEmaPeriod);
             }
+
+            if (EnableMacdModule)
+            {
+                _macd = Indicators.MacdHistogram(Bars.ClosePrices, MacdLongCycle, MacdShortCycle, MacdSignalPeriods);
+                Print("  [✓] MACD  Long={0} Short={1} Signal={2}", MacdLongCycle, MacdShortCycle, MacdSignalPeriods);
+            }
+
+            if (EnableAdxFilter)
+            {
+                _dms = Indicators.DirectionalMovementSystem(AdxPeriod);
+                Print("  [✓] ADX   Period={0} MinValue={1:F1} DIAlign={2}", AdxPeriod, MinAdxValue, RequireDiAlignment);
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  WarmUpSupertrendState (v2.12.0)
+        //  Initialisiert Supertrend-State aus historischen Bars statt kaltem Start.
+        //  Verhindert falsche Trend-Richtung nach Bot-Restart.
+        // ─────────────────────────────────────────────────────────────────────
+        private void WarmUpSupertrendState()
+        {
+            if (_atrSupertrend == null) return;
+            int warmupBars = Math.Min(SupertrendAtrPeriod * 5, Bars.Count - 2);
+
+            for (int i = warmupBars; i >= 1; i--)
+            {
+                double atr = _atrSupertrend.Result.Last(i);
+                if (double.IsNaN(atr) || atr <= 0) continue;
+
+                double hl2      = (Bars.HighPrices.Last(i) + Bars.LowPrices.Last(i)) / 2.0;
+                double rawUpper = hl2 + SupertrendFactor * atr;
+                double rawLower = hl2 - SupertrendFactor * atr;
+                double closeNow = Bars.ClosePrices.Last(i);
+                double prevClose = (i + 1 < Bars.Count) ? Bars.ClosePrices.Last(i + 1) : closeNow;
+
+                double newUpper, newLower;
+                if (!_stInitialized)
+                {
+                    newUpper = rawUpper;
+                    newLower = rawLower;
+                    _stTrend = closeNow > hl2 ? 1 : -1;
+                    _stInitialized = true;
+                }
+                else
+                {
+                    newUpper = prevClose > _stFinalUpperBand ? rawUpper : Math.Min(rawUpper, _stFinalUpperBand);
+                    newLower = prevClose < _stFinalLowerBand ? rawLower : Math.Max(rawLower, _stFinalLowerBand);
+                }
+
+                if (_stTrend == -1 && closeNow > newUpper)     _stTrend = 1;
+                else if (_stTrend == 1  && closeNow < newLower) _stTrend = -1;
+
+                _stFinalUpperBand = newUpper;
+                _stFinalLowerBand = newLower;
+            }
+
+            if (_stInitialized)
+                Print("  [✓] Supertrend warm-up: {0} bars, trend={1}", warmupBars, _stTrend == 1 ? "Bullish" : "Bearish");
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -905,6 +1009,7 @@ namespace cAlgo.Robots
             if (EnableFiboModule)       _maxPossibleScore += FiboMaxWeight;
             if (EnableOscModule)        _maxPossibleScore += OscMaxWeight;
             if (EnableSrModule)         _maxPossibleScore += SrMaxWeight;
+            if (EnableMacdModule)       _maxPossibleScore += MacdMaxWeight;
 
             if (_maxPossibleScore == 0)
             {
@@ -1131,7 +1236,6 @@ namespace cAlgo.Robots
             string scoreStr = "–";
             if (!_botInStandby && _maxPossibleScore > 0)
             {
-                int best = Math.Max(_cachedLongScore, _cachedShortScore);
                 scoreStr = string.Format("L:{0} S:{1} (max {2})",
                     _cachedLongScore, _cachedShortScore, _maxPossibleScore);
             }
@@ -1149,7 +1253,7 @@ namespace cAlgo.Robots
             string line = "─────────────────────────────";
             string text =
                 "╔═══════════════════════════╗"  + nl +
-                "║  10-FOLD BOT  v2.8.0      ║"  + nl +
+                "║  10-FOLD BOT  v2.11.0     ║"  + nl +
                 "╚═══════════════════════════╝"  + nl +
                 string.Format("  Status   : {0}", botStatus)              + nl +
                 line                                                        + nl +
@@ -1378,6 +1482,37 @@ namespace cAlgo.Robots
                 return false;
             }
 
+            if (EnableAdxFilter && _dms != null)
+            {
+                double adxVal   = _dms.ADX.LastValue;
+                double diPlus   = _dms.DIPlus.LastValue;
+                double diMinus  = _dms.DIMinus.LastValue;
+
+                if (double.IsNaN(adxVal))
+                {
+                    if (logRejections) Print("Trade rejected [{0}]: ADX value invalid (NaN).", direction);
+                    return false;
+                }
+
+                if (adxVal < MinAdxValue)
+                {
+                    if (logRejections) Print("Trade rejected [{0}]: ADX {1:F1} < MinAdxValue {2:F1} (chop filter).",
+                        direction, adxVal, MinAdxValue);
+                    return false;
+                }
+
+                if (RequireDiAlignment && !double.IsNaN(diPlus) && !double.IsNaN(diMinus))
+                {
+                    bool aligned = direction == TradeType.Buy ? diPlus > diMinus : diMinus > diPlus;
+                    if (!aligned)
+                    {
+                        if (logRejections) Print("Trade rejected [{0}]: DI not aligned (DI+={1:F1} DI-={2:F1}).",
+                            direction, diPlus, diMinus);
+                        return false;
+                    }
+                }
+            }
+
             if (logRejections)
                 Print("Market tradable for {0}. Spread={1:F2}p  FloatingLoss={2:F2}%", direction, spreadPips, exposurePct);
             return true;
@@ -1400,9 +1535,10 @@ namespace cAlgo.Robots
             if (EnableFiboModule)       score += ScoreFibonacci(direction, logVerbose);
             if (EnableOscModule)        score += ScoreOscillators(direction, logVerbose);
             if (EnableSrModule)         score += ScoreSupportResistance(direction, logVerbose);
+            if (EnableMacdModule)       score += ScoreMacd(direction, logVerbose);
 
             if (EnableVerboseScoreLogging && logVerbose)
-                Print("Score [{0}]: EMA+BB+ST+PA+FIB+OSC+SR = {1}/{2}", direction, score, _maxPossibleScore);
+                Print("Score [{0}]: EMA+BB+ST+PA+FIB+OSC+SR+MACD = {1}/{2}", direction, score, _maxPossibleScore);
 
             return score;
         }
@@ -1414,10 +1550,10 @@ namespace cAlgo.Robots
         {
             int pts = 0;
 
-            double fastNow  = _emaFast.Result.LastValue;
-            double slowNow  = _emaSlow.Result.LastValue;
-            double fastPrev = _emaFast.Result.Last(2); // vorheriger Bar (war fälschlich Last(3))
-            double closeNow = Bars.ClosePrices.LastValue;
+            double fastNow  = _emaFast.Result.Last(1);  // repaint-safe: closed bar only
+            double slowNow  = _emaSlow.Result.Last(1);  // repaint-safe: closed bar only
+            double fastPrev = _emaFast.Result.Last(2);  // bar before fastNow (closed)
+            double closeNow = Bars.ClosePrices.Last(1); // repaint-safe: closed bar only
             double lowPrev  = Bars.LowPrices.Last(1);
             double highPrev = Bars.HighPrices.Last(1);
 
@@ -1450,11 +1586,11 @@ namespace cAlgo.Robots
         {
             int pts = 0;
 
-            double upperBand  = _bollingerBands.Top.LastValue;
-            double lowerBand  = _bollingerBands.Bottom.LastValue;
-            double middleBand = _bollingerBands.Main.LastValue;
-            double closeNow   = Bars.ClosePrices.LastValue;
-            double closePrev  = Bars.ClosePrices.Last(1);
+            double upperBand  = _bollingerBands.Top.Last(1);     // repaint-safe: closed bar only
+            double lowerBand  = _bollingerBands.Bottom.Last(1);  // repaint-safe: closed bar only
+            double middleBand = _bollingerBands.Main.Last(1);    // repaint-safe: closed bar only
+            double closeNow   = Bars.ClosePrices.Last(1);        // repaint-safe: closed bar only
+            double closePrev  = Bars.ClosePrices.Last(2);        // bar before closeNow (closed)
             double lowPrev    = Bars.LowPrices.Last(1);
             double highPrev   = Bars.HighPrices.Last(1);
 
@@ -1538,9 +1674,9 @@ namespace cAlgo.Robots
             if (!_stInitialized) return 0;
 
             int    pts      = 0;
-            double closeNow = Bars.ClosePrices.LastValue;
-            double atrNow   = (_atrSupertrend != null && !double.IsNaN(_atrSupertrend.Result.LastValue))
-                              ? _atrSupertrend.Result.LastValue : 0;
+            double closeNow = Bars.ClosePrices.Last(1);  // repaint-safe: closed bar only
+            double atrNow   = (_atrSupertrend != null && !double.IsNaN(_atrSupertrend.Result.Last(1)))
+                              ? _atrSupertrend.Result.Last(1) : 0;  // repaint-safe: closed bar only
 
             if (direction == TradeType.Buy)
             {
@@ -1667,7 +1803,7 @@ namespace cAlgo.Robots
             if (swingRange < Symbol.PipSize * 5) return 0;
 
             double tol   = swingRange * (FiboTolerancePercent / 100.0);
-            double price = Bars.ClosePrices.LastValue;
+            double price = Bars.ClosePrices.Last(1); // repaint-safe: closed bar only
 
             double[] levels;
             if (direction == TradeType.Buy)
@@ -1713,11 +1849,11 @@ namespace cAlgo.Robots
         {
             if (_rsi == null && _stochastic == null) return 0;
 
-            double rsiNow = _rsi        != null ? _rsi.Result.LastValue          : 50.0;
-            double kNow   = _stochastic != null ? _stochastic.PercentK.LastValue : 50.0;
-            double dNow   = _stochastic != null ? _stochastic.PercentD.LastValue : 50.0;
-            double kPrev  = _stochastic != null ? _stochastic.PercentK.Last(1)   : 50.0;
-            double dPrev  = _stochastic != null ? _stochastic.PercentD.Last(1)   : 50.0;
+            double rsiNow = _rsi        != null ? _rsi.Result.Last(1)            : 50.0;  // repaint-safe
+            double kNow   = _stochastic != null ? _stochastic.PercentK.Last(1)   : 50.0;  // repaint-safe
+            double dNow   = _stochastic != null ? _stochastic.PercentD.Last(1)   : 50.0;  // repaint-safe
+            double kPrev  = _stochastic != null ? _stochastic.PercentK.Last(2)   : 50.0;  // bar before kNow
+            double dPrev  = _stochastic != null ? _stochastic.PercentD.Last(2)   : 50.0;  // bar before dNow
 
             int pts = 0;
 
@@ -1756,7 +1892,7 @@ namespace cAlgo.Robots
         // ════════════════════════════════════════════════════════════════════
         private int ScoreSupportResistance(TradeType direction, bool logVerbose = true)
         {
-            double price    = Bars.ClosePrices.LastValue;
+            double price    = Bars.ClosePrices.Last(1); // repaint-safe: closed bar only
             double tolPrice = SrZoneTolerance * Symbol.PipSize;
 
             double vwap     = _cachedVwap;
@@ -1801,6 +1937,49 @@ namespace cAlgo.Robots
                     direction, nearSupport, nearResistance, srClusterCount, vwap, nearVwap, pts);
 
             return Math.Min(pts, SrMaxWeight);
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        //  SCORING MODULE: MACD
+        //   (1) Context : MACD-Line vs Signal (bullish/bearish Basis)
+        //   (2) Strength: Histogram wächst in Richtung (Momentum beschleunigt)
+        //   (3) Timing  : Histogram hat gerade die Nulllinie in Richtung gekreuzt
+        // ════════════════════════════════════════════════════════════════════
+        private int ScoreMacd(TradeType direction, bool logVerbose = true)
+        {
+            if (_macd == null) return 0;
+
+            double histNow  = _macd.Histogram.Last(1);  // repaint-safe: closed bar only
+            double histPrev = _macd.Histogram.Last(2);  // bar before histNow (closed)
+            double sigNow   = _macd.Signal.Last(1);     // repaint-safe: closed bar only
+
+            if (double.IsNaN(histNow) || double.IsNaN(histPrev) || double.IsNaN(sigNow))
+                return 0;
+
+            // MACD-Line rekonstruiert aus Histogram + Signal (Standard-Formel)
+            double macdNow  = histNow  + sigNow;
+            double macdPrev = histPrev + _macd.Signal.Last(2); // bar before sigNow (closed)
+
+            int pts = 0;
+
+            if (direction == TradeType.Buy)
+            {
+                if (macdNow > sigNow)                               pts++; // (1) Context
+                if (histNow > histPrev)                             pts++; // (2) Strength
+                if (macdPrev <= 0 && macdNow > 0)                   pts++; // (3) Timing (Zero-Cross up)
+            }
+            else
+            {
+                if (macdNow < sigNow)                               pts++;
+                if (histNow < histPrev)                             pts++;
+                if (macdPrev >= 0 && macdNow < 0)                   pts++;
+            }
+
+            if (EnableVerboseScoreLogging && logVerbose)
+                Print("  [MACD] dir={0} macd={1:F6} sig={2:F6} hist={3:F6} (prev={4:F6}) pts={5}",
+                    direction, macdNow, sigNow, histNow, histPrev, pts);
+
+            return Math.Min(pts, MacdMaxWeight);
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -2039,18 +2218,19 @@ namespace cAlgo.Robots
             }
 
             double volumeInUnits = Symbol.NormalizeVolumeInUnits(rawUnits, RoundingMode.Down);
-            double minUnits      = MinLotSize * Symbol.LotSize;
-            double maxUnits      = MaxLotSize * Symbol.LotSize;
+            double minUnits      = Symbol.VolumeInUnitsMin;
+            double maxUnits      = Symbol.VolumeInUnitsMax;
 
             if (volumeInUnits < minUnits)
             {
-                Print("TryOpenTrade [{0}]: Volume {1:F0} units < MinLotSize ({2:F0} units). Skipping.",
-                    direction, volumeInUnits, minUnits);
+                Print("TryOpenTrade [{0}]: Volume {1:F0} units < Broker-Min ({2:F0} units = {3:F2} lots). Skipping.",
+                    direction, volumeInUnits, minUnits, minUnits / Symbol.LotSize);
                 return;
             }
             if (volumeInUnits > maxUnits)
             {
-                Print("TryOpenTrade [{0}]: Volume clamped to MaxLotSize.", direction);
+                Print("TryOpenTrade [{0}]: Volume clamped to Broker-Max ({1:F0} units = {2:F2} lots).",
+                    direction, maxUnits, maxUnits / Symbol.LotSize);
                 volumeInUnits = maxUnits;
             }
 
@@ -2569,7 +2749,7 @@ namespace cAlgo.Robots
         private void LogScoreBreakdown(TradeType direction, int totalScore)
         {
             Print("[ScoreBreakdown {0}] Total={1}/{2} (min={3}) | " +
-                  "EMA={4} BB={5} ST={6} PA={7} FIB={8} OSC={9} SR={10}",
+                  "EMA={4} BB={5} ST={6} PA={7} FIB={8} OSC={9} SR={10} MACD={11}",
                 direction, totalScore, _maxPossibleScore, _minRequiredScore,
                 EnableEmaModule        ? ScoreEma(direction,               false).ToString() : "off",
                 EnableBbModule         ? ScoreBollingerBands(direction,    false).ToString() : "off",
@@ -2577,7 +2757,8 @@ namespace cAlgo.Robots
                 EnablePatternsModule   ? ScorePatterns(direction,          false).ToString() : "off",
                 EnableFiboModule       ? ScoreFibonacci(direction,         false).ToString() : "off",
                 EnableOscModule        ? ScoreOscillators(direction,       false).ToString() : "off",
-                EnableSrModule         ? ScoreSupportResistance(direction, false).ToString() : "off");
+                EnableSrModule         ? ScoreSupportResistance(direction, false).ToString() : "off",
+                EnableMacdModule       ? ScoreMacd(direction,              false).ToString() : "off");
         }
 
         private void LogTradeState()
