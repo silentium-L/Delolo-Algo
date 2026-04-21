@@ -45,6 +45,9 @@ namespace cAlgo.Robots
         // v2.8.0 – Interval-Lot-TP State
         public int    IntervalsTriggered   { get; set; }
         public double IntervalAtrAtEntry   { get; set; }  // ATR zum Zeitpunkt des Entries (falls AtrMultiple-Mode)
+
+        // v2.12.0 – Trade entry time for max-hold-time-exit
+        public DateTime EntryTime          { get; set; }
     }
 
 
@@ -557,6 +560,14 @@ namespace cAlgo.Robots
             Group = "19 · Exit Logic", DefaultValue = 15.0, MinValue = 1.0, MaxValue = 40.0)]
         public double RsiPanicShort { get; set; }
 
+        [Parameter("Enable Max Hold Time Exit",
+            Group = "19 · Exit Logic", DefaultValue = false)]
+        public bool EnableMaxHoldTime { get; set; }
+
+        [Parameter("Max Hold Time (Hours)",
+            Group = "19 · Exit Logic", DefaultValue = 48, MinValue = 1, MaxValue = 720)]
+        public int MaxHoldTimeHours { get; set; }
+
         // ── 20 · Account Protection ──────────────────────────────────────────
         [Parameter("Max Daily Drawdown % (halts new entries)",
             Group = "20 · Account Protection", DefaultValue = 2.0, MinValue = 0.1, MaxValue = 100.0, Step = 0.1)]
@@ -1034,13 +1045,14 @@ namespace cAlgo.Robots
                 ChandelierStopShort  = !isLong && found.StopLoss.HasValue ? found.StopLoss.Value : double.MaxValue,
                 ConsecutiveEmaCloses = 0,
                 IntervalsTriggered   = intervalsTriggered,
-                IntervalAtrAtEntry   = atrAtEntry
+                IntervalAtrAtEntry   = atrAtEntry,
+                EntryTime            = found.EntryTime       // v2.12.0: für Max-Hold-Time-Exit
             };
 
-            Print("RECOVERY: Adopted open position Id={0} {1} Entry={2:F5} SL={3:F1}p Vol={4:F0}u | " +
-                  "BE-done={5} Partials→done (no retrigger) Intervals={6}",
-                found.Id, found.TradeType, entry, slPips, found.VolumeInUnits,
-                beDone, intervalsTriggered);
+            Print("RECOVERY: Adopted open position Id={0} {1} Entry={2:F5} | " +
+                  "Partials disabled (all Done=true – original volume unknown). InitialVolume={3:F0}u. " +
+                  "Trailing/BE/Intervals only. EntryTime={4:yyyy-MM-dd HH:mm:ss}",
+                found.Id, found.TradeType, entry, found.VolumeInUnits, found.EntryTime);
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -2478,7 +2490,8 @@ namespace cAlgo.Robots
                 ChandelierStopShort  = double.MaxValue,
                 ConsecutiveEmaCloses = 0,
                 IntervalsTriggered   = 0,
-                IntervalAtrAtEntry   = atrAtEntry
+                IntervalAtrAtEntry   = atrAtEntry,
+                EntryTime            = result.Position.EntryTime  // v2.12.0: für Max-Hold-Time-Exit
             };
 
             _totalTradesOpened++;
@@ -2586,12 +2599,22 @@ namespace cAlgo.Robots
             double closeUnits = Symbol.NormalizeVolumeInUnits(
                 pos.VolumeInUnits * (percent / 100.0), RoundingMode.Down);
 
-            // v2.9.0 – Bei invalidem Volumen Level als "done" markieren, um Tick-Spam zu vermeiden.
-            // Grund: War bisher false → Print-Flut pro Tick, solange Trigger-R überschritten ist.
-            if (closeUnits <= 0 || closeUnits >= pos.VolumeInUnits)
+            // v2.12.0 – Split into two cases: full-close if volume-depleted, skip if invalid
+            if (closeUnits <= 0)
             {
-                Print("Partial{0}: Volume calculation invalid ({1:F0} units) at {2:F2}R – marking as done to prevent retry.",
-                    level, closeUnits, currentR);
+                Print("Partial{0}: closeUnits <= 0 at {1:F2}R – marking as done.", level, currentR);
+                return true;
+            }
+
+            if (closeUnits >= pos.VolumeInUnits)
+            {
+                // v2.12.0 – Full-close when volume exhausted (instead of silent skip)
+                var fullResult = ClosePosition(pos);
+                if (fullResult.IsSuccessful)
+                    Print("Partial{0}: Full-close at {1:F2}R (volume depleted). PnL={2:F2} {3}",
+                        level, currentR, fullResult.Position?.NetProfit ?? 0, Account.Asset.Name);
+                else
+                    Print("Partial{0}: Full-close failed. Error={1}", level, fullResult.Error);
                 return true;
             }
 
@@ -2839,7 +2862,19 @@ namespace cAlgo.Robots
                 }
             }
 
-            // ── d) Swap / Rollover Evasion ────────────────────────────────────
+            // ── d) Max Hold Time Exit (v2.12.0) ───────────────────────────────
+            if (EnableMaxHoldTime && _currentTrade.EntryTime != DateTime.MinValue)
+            {
+                double elapsed = (Server.Time - _currentTrade.EntryTime).TotalHours;
+                if (elapsed >= MaxHoldTimeHours)
+                {
+                    Print("MaxHoldTime exit: {0:F1}h elapsed >= limit {1}h. Closing.", elapsed, MaxHoldTimeHours);
+                    ForceCloseCurrentTrade("MaxHoldTime");
+                    return;
+                }
+            }
+
+            // ── e) Swap / Rollover Evasion ────────────────────────────────────
             if (EnableSwapEvasion && !_rolloverCheckDoneToday)
             {
                 TimeSpan rolloverTime = new TimeSpan(RolloverHour, RolloverMinute, 0);
