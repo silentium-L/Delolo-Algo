@@ -398,6 +398,14 @@ namespace cAlgo.Robots
             Group = "13 · Position Sizing & Risk", DefaultValue = RiskBase.Balance)]
         public RiskBase RiskBaseMode { get; set; }
 
+        [Parameter("Consec Loss Size Reducer (1.0=off, 0.5-1.0 to shrink after losses)",
+            Group = "13 · Position Sizing & Risk", DefaultValue = 1.0, MinValue = 0.5, MaxValue = 1.0, Step = 0.05)]
+        public double ConsecLossSizeReducer { get; set; }
+
+        [Parameter("Estimated Commission Pips (0 = use Symbol.Commission if available)",
+            Group = "13 · Position Sizing & Risk", DefaultValue = 0.0, MinValue = 0.0, Step = 0.1)]
+        public double EstimatedCommissionPips { get; set; }
+
         // ── 14 · Stop Loss ───────────────────────────────────────────────────
         [Parameter("SL Calculation Method",
             Group = "14 · Stop Loss", DefaultValue = SlMethod.AtrBased)]
@@ -613,6 +621,10 @@ namespace cAlgo.Robots
             Group = "20 · Account Protection", DefaultValue = 3, MinValue = 0)]
         public int MaxTradesPerDay { get; set; }
 
+        [Parameter("Max Weekly Drawdown % (0 = off, resets Monday)",
+            Group = "20 · Account Protection", DefaultValue = 0.0, MinValue = 0.0, MaxValue = 100.0, Step = 0.5)]
+        public double MaxWeeklyDrawdownPercent { get; set; }
+
         [Parameter("Max Consecutive Losses (0 = off)",
             Group = "20 · Account Protection", DefaultValue = 2, MinValue = 0)]
         public int MaxConsecutiveLosses { get; set; }
@@ -665,6 +677,11 @@ namespace cAlgo.Robots
         private int      _tradesToday;
         private int      _consecutiveLosses;
         private DateTime _cooldownEndTime = DateTime.MinValue;
+
+        // v2.13.0 – P3: Weekly DD Cap
+        private double   _weekStartEquity        = 0;
+        private bool     _weeklyDrawdownBreached = false;
+        private DateTime _lastWeeklyResetDate    = DateTime.MinValue;
         private bool     _persistedTodayLoaded;
         private List<TimeWindow> _parsedNewsWindows = new List<TimeWindow>();
         private Bars     _dailyBars;
@@ -749,6 +766,7 @@ namespace cAlgo.Robots
 
             LoadPersistedState();
             ResetDailyState(isOnStartCall: true);
+            ResetWeeklyState(isOnStartCall: true);
 
             if (ShowDashboard)
                 InitializeDashboard();
@@ -897,6 +915,13 @@ namespace cAlgo.Robots
 
             if (!FiboUseLegacyRange)
                 Print("INFO: FiboUseLegacyRange=false – nutzt FindLastImpulseSwing (last coherent swing).");
+
+            if (ConsecLossSizeReducer < 1.0)
+                Print("INFO: ConsecLossSizeReducer={0:F2} – Anti-Martingale Sizing aktiv.", ConsecLossSizeReducer);
+
+            if (MaxWeeklyDrawdownPercent > 0 && MaxWeeklyDrawdownPercent < MaxDailyDrawdownPercent)
+                Print("WARNING: MaxWeeklyDrawdownPercent ({0:F1}%) < MaxDailyDrawdownPercent ({1:F1}%) – wöchentlicher Cap ist enger als täglicher.",
+                    MaxWeeklyDrawdownPercent, MaxDailyDrawdownPercent);
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -1248,6 +1273,60 @@ namespace cAlgo.Robots
         }
 
         // ─────────────────────────────────────────────────────────────────────
+        //  GetWeekMonday – returns Monday date of the week containing d
+        // ─────────────────────────────────────────────────────────────────────
+        private static DateTime GetWeekMonday(DateTime d)
+        {
+            int back = ((int)d.DayOfWeek - (int)DayOfWeek.Monday + 7) % 7;
+            return d.Date.AddDays(-back);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  ResetWeeklyState (v2.13.0 – P3)
+        // ─────────────────────────────────────────────────────────────────────
+        private void ResetWeeklyState(bool isOnStartCall = false)
+        {
+            bool loaded = false;
+            if (isOnStartCall && MaxWeeklyDrawdownPercent > 0)
+            {
+                string wKey = "10fold_weekequity_" + GetWeekMonday(Server.Time).ToString("yyyyMMdd");
+                try
+                {
+                    object obj = ObjectStore.GetValue(wKey);
+                    if (obj != null && double.TryParse(obj.ToString(),
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out double stored))
+                    {
+                        _weekStartEquity = stored;
+                        loaded = true;
+                        Print("  [✓] Loaded persisted weekly equity: {0:F2} {1}", _weekStartEquity, Account.Asset.Name);
+                    }
+                }
+                catch { }
+            }
+
+            if (!loaded)
+                _weekStartEquity = Account.Equity;
+
+            _weeklyDrawdownBreached = false;
+            _lastWeeklyResetDate    = Server.Time;
+            PersistWeeklyState();
+        }
+
+        private void PersistWeeklyState()
+        {
+            if (MaxWeeklyDrawdownPercent <= 0) return;
+            try
+            {
+                string wKey = "10fold_weekequity_" + GetWeekMonday(Server.Time).ToString("yyyyMMdd");
+                ObjectStore.SetValue(wKey, _weekStartEquity.ToString("F4",
+                    System.Globalization.CultureInfo.InvariantCulture));
+            }
+            catch (Exception ex) { Print("  [!] PersistWeeklyState error: {0}", ex.Message); }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
         //  ResetDailyState
         // ─────────────────────────────────────────────────────────────────────
         private void ResetDailyState(bool isOnStartCall = false)
@@ -1557,8 +1636,14 @@ namespace cAlgo.Robots
             if (Server.Time.Date > _lastDailyResetDate.Date)
                 ResetDailyState();
 
+            DateTime thisMonday = GetWeekMonday(Server.Time);
+            if (thisMonday > _lastWeeklyResetDate.Date)
+                ResetWeeklyState();
+
             if (_botInStandby)          { Print("OnBar: Bot in Standby – skipped."); return; }
             if (_dailyDrawdownBreached) { Print("OnBar: Daily drawdown breached – no new entries."); return; }
+            if (MaxWeeklyDrawdownPercent > 0 && _weeklyDrawdownBreached)
+                { Print("OnBar: Weekly drawdown breached – no new entries until Monday."); return; }
             if (_currentTrade != null)  return;
 
             if (EnableSupertrendModule) UpdateSupertrendState();
@@ -1636,17 +1721,31 @@ namespace cAlgo.Robots
         // ─────────────────────────────────────────────────────────────────────
         private void CheckDailyDrawdown()
         {
-            if (_dailyDrawdownBreached) return;
-
-            double equityDrop = _dayStartEquity - Account.Equity;
-            double dropPct    = _dayStartEquity > 0 ? (equityDrop / _dayStartEquity) * 100.0 : 0;
-
-            if (dropPct >= MaxDailyDrawdownPercent)
+            if (!_dailyDrawdownBreached)
             {
-                _dailyDrawdownBreached = true;
-                Print("ACCOUNT PROTECTION: Daily drawdown {0:F2}% >= limit {1:F1}%. " +
-                      "No new entries for the rest of today. StartEquity={2:F2} Current={3:F2}",
-                      dropPct, MaxDailyDrawdownPercent, _dayStartEquity, Account.Equity);
+                double equityDrop = _dayStartEquity - Account.Equity;
+                double dropPct    = _dayStartEquity > 0 ? (equityDrop / _dayStartEquity) * 100.0 : 0;
+
+                if (dropPct >= MaxDailyDrawdownPercent)
+                {
+                    _dailyDrawdownBreached = true;
+                    Print("ACCOUNT PROTECTION: Daily drawdown {0:F2}% >= limit {1:F1}%. " +
+                          "No new entries for the rest of today. StartEquity={2:F2} Current={3:F2}",
+                          dropPct, MaxDailyDrawdownPercent, _dayStartEquity, Account.Equity);
+                }
+            }
+
+            if (MaxWeeklyDrawdownPercent > 0 && !_weeklyDrawdownBreached)
+            {
+                double weekDrop = _weekStartEquity - Account.Equity;
+                double weekPct  = _weekStartEquity > 0 ? (weekDrop / _weekStartEquity) * 100.0 : 0;
+                if (weekPct >= MaxWeeklyDrawdownPercent)
+                {
+                    _weeklyDrawdownBreached = true;
+                    Print("ACCOUNT PROTECTION: Weekly drawdown {0:F2}% >= limit {1:F1}%. " +
+                          "No new entries until Monday. WeekStartEquity={2:F2} Current={3:F2}",
+                          weekPct, MaxWeeklyDrawdownPercent, _weekStartEquity, Account.Equity);
+                }
             }
         }
 
@@ -2527,7 +2626,13 @@ namespace cAlgo.Robots
                          / (_maxPossibleScore - _minRequiredScore);
 
             ratio = Math.Max(0.0, Math.Min(1.0, ratio));
-            return MinRiskPercent + (MaxRiskPercent - MinRiskPercent) * ratio;
+            double risk = MinRiskPercent + (MaxRiskPercent - MinRiskPercent) * ratio;
+
+            // P3: Anti-Martingale – reduce size after consecutive losses
+            if (ConsecLossSizeReducer < 1.0 && _consecutiveLosses >= 1)
+                risk *= Math.Pow(ConsecLossSizeReducer, _consecutiveLosses);
+
+            return risk;
         }
 
         // ════════════════════════════════════════════════════════════════════
@@ -2792,10 +2897,17 @@ namespace cAlgo.Robots
                 tpLabel = tpPips > 0 ? tpPips.ToString("F1") + "p" : "Runner";
             }
 
-            double rrr = (tpPips > 0 && slPips > 0) ? tpPips / slPips : 0;
-            Print("TryOpenTrade: FILLED ✓ | Id={0} | Entry={1:F5} | SL={2:F1}p | TP={3} | R:R={4:F2} | Vol={5:F0}u ({6:F2}L)",
+            double rrr        = (tpPips > 0 && slPips > 0) ? tpPips / slPips : 0;
+            double entrySpreadP = (Symbol.Ask - Symbol.Bid) / Symbol.PipSize;
+            double commPips   = EstimatedCommissionPips;
+            if (commPips <= 0 && Symbol.Commission > 0 && Symbol.PipValue > 0 && Symbol.LotSize > 0)
+                commPips = (Symbol.Commission * 2.0) / (Symbol.PipValue * Symbol.LotSize);
+            double effRrr = (tpPips > 0 && slPips > 0)
+                ? (tpPips - entrySpreadP - commPips) / (slPips + entrySpreadP + commPips)
+                : 0;
+            Print("TryOpenTrade: FILLED ✓ | Id={0} | Entry={1:F5} | SL={2:F1}p | TP={3} | R:R={4:F2} (eff={5:F2}) | Vol={6:F0}u ({7:F2}L)",
                 _currentTrade.PositionId, _currentTrade.EntryPrice, _currentTrade.InitialSlPips,
-                tpLabel, rrr, _currentTrade.InitialVolume, _currentTrade.InitialVolume / Symbol.LotSize);
+                tpLabel, rrr, effRrr, _currentTrade.InitialVolume, _currentTrade.InitialVolume / Symbol.LotSize);
 
             // Modul-Score-Breakdown für bessere Backtest-Analyse
             if (EnableVerboseScoreLogging)
