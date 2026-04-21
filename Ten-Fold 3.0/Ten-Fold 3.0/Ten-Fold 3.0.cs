@@ -624,6 +624,20 @@ namespace cAlgo.Robots
         private int      _cachedCounterScore      = 0;
         private bool     _cachedCounterTradable   = false;
 
+        // v2.12.0 – Pivot-Point-Cache: GetRecentPivots reduziert von 4×/OnBar auf 1×
+        private DateTime _pivotCacheBarTime = DateTime.MinValue;
+        private readonly Dictionary<int, List<PivotPoint>> _pivotCache = new Dictionary<int, List<PivotPoint>>();
+
+        // v2.12.0 – Module-Score-Cache: LogScoreBreakdown liest aus Cache statt neu zu rechnen
+        private int[] _cachedLongModuleScores  = new int[8]; // EMA,BB,ST,PA,FIB,OSC,SR,MACD
+        private int[] _cachedShortModuleScores = new int[8];
+
+        // v2.12.0 – VWAP incremental: statt O(480) Loop wird O(1) pro Bar
+        private double   _vwapSumTpVol    = 0;
+        private double   _vwapSumVol      = 0;
+        private DateTime _vwapLastBarTime = DateTime.MinValue;
+        private DateTime _vwapLastDate    = DateTime.MinValue;
+
         private const string BotLabel = "10-Fold Bot";
 
         // ════════════════════════════════════════════════════════════════════
@@ -1298,8 +1312,8 @@ namespace cAlgo.Robots
 
             if (EnableSupertrendModule) UpdateSupertrendState();
 
-            // VWAP einmal pro Bar cachen (nicht jeden Tick neu berechnen)
-            if (EnableSrModule) _cachedVwap = ComputeDailyVwap();
+            // VWAP incremental (v2.12.0): einmal pro Bar, kein O(480) Loop
+            UpdateVwapIncremental();
 
             bool longTradable  = IsMarketTradable(TradeType.Buy);
             bool shortTradable = IsMarketTradable(TradeType.Sell);
@@ -1527,15 +1541,24 @@ namespace cAlgo.Robots
         private int CalculateEntryScore(TradeType direction, bool logVerbose = true)
         {
             int score = 0;
+            int[] cache = direction == TradeType.Buy ? _cachedLongModuleScores : _cachedShortModuleScores;
 
-            if (EnableEmaModule)        score += ScoreEma(direction, logVerbose);
-            if (EnableBbModule)         score += ScoreBollingerBands(direction, logVerbose);
-            if (EnableSupertrendModule) score += ScoreSupertrend(direction, logVerbose);
-            if (EnablePatternsModule)   score += ScorePatterns(direction, logVerbose);
-            if (EnableFiboModule)       score += ScoreFibonacci(direction, logVerbose);
-            if (EnableOscModule)        score += ScoreOscillators(direction, logVerbose);
-            if (EnableSrModule)         score += ScoreSupportResistance(direction, logVerbose);
-            if (EnableMacdModule)       score += ScoreMacd(direction, logVerbose);
+            cache[0] = EnableEmaModule        ? ScoreEma(direction, logVerbose) : 0;
+            score += cache[0];
+            cache[1] = EnableBbModule         ? ScoreBollingerBands(direction, logVerbose) : 0;
+            score += cache[1];
+            cache[2] = EnableSupertrendModule ? ScoreSupertrend(direction, logVerbose) : 0;
+            score += cache[2];
+            cache[3] = EnablePatternsModule   ? ScorePatterns(direction, logVerbose) : 0;
+            score += cache[3];
+            cache[4] = EnableFiboModule       ? ScoreFibonacci(direction, logVerbose) : 0;
+            score += cache[4];
+            cache[5] = EnableOscModule        ? ScoreOscillators(direction, logVerbose) : 0;
+            score += cache[5];
+            cache[6] = EnableSrModule         ? ScoreSupportResistance(direction, logVerbose) : 0;
+            score += cache[6];
+            cache[7] = EnableMacdModule       ? ScoreMacd(direction, logVerbose) : 0;
+            score += cache[7];
 
             if (EnableVerboseScoreLogging && logVerbose)
                 Print("Score [{0}]: EMA+BB+ST+PA+FIB+OSC+SR+MACD = {1}/{2}", direction, score, _maxPossibleScore);
@@ -2007,6 +2030,50 @@ namespace cAlgo.Robots
             return sumVol > 0 ? sumTpVol / sumVol : 0;
         }
 
+        // ─────────────────────────────────────────────────────────────────────
+        //  UpdateVwapIncremental (v2.12.0)
+        //  Incremental VWAP statt O(480) Loop pro Bar: full rescan nur bei Tagswechsel,
+        //  dann nur +1 Bar pro Tick. Called from OnBar(), caches result in _cachedVwap.
+        // ─────────────────────────────────────────────────────────────────────
+        private void UpdateVwapIncremental()
+        {
+            if (!EnableSrModule) return;
+
+            DateTime barTime = Bars.OpenTimes.Last(1); // closed bar time
+            DateTime barDate = barTime.Date;
+
+            if (barDate != _vwapLastDate)
+            {
+                // New day: full rescan of all today's closed bars
+                _vwapSumTpVol = 0;
+                _vwapSumVol   = 0;
+                _vwapLastDate = barDate;
+                _vwapLastBarTime = DateTime.MinValue;
+
+                int maxLb = Math.Min(Bars.Count - 2, 1440);
+                for (int i = maxLb; i >= 1; i--)
+                {
+                    if (Bars.OpenTimes.Last(i).Date != barDate) continue;
+                    double tp  = (Bars.HighPrices.Last(i) + Bars.LowPrices.Last(i) + Bars.ClosePrices.Last(i)) / 3.0;
+                    double vol = Math.Max(Bars.TickVolumes.Last(i), 1);
+                    _vwapSumTpVol += tp * vol;
+                    _vwapSumVol   += vol;
+                }
+                _vwapLastBarTime = barTime;
+            }
+            else if (barTime != _vwapLastBarTime)
+            {
+                // Same day, new bar: incrementally add Last(1)
+                double tp  = (Bars.HighPrices.Last(1) + Bars.LowPrices.Last(1) + Bars.ClosePrices.Last(1)) / 3.0;
+                double vol = Math.Max(Bars.TickVolumes.Last(1), 1);
+                _vwapSumTpVol += tp * vol;
+                _vwapSumVol   += vol;
+                _vwapLastBarTime = barTime;
+            }
+
+            _cachedVwap = _vwapSumVol > 0 ? _vwapSumTpVol / _vwapSumVol : 0;
+        }
+
         #endregion // Scoring Engine
 
         #region Risk & Position Sizing
@@ -2024,7 +2091,27 @@ namespace cAlgo.Robots
         //  leftRightStrength: Wie viele Bars links UND rechts must der Pivot
         //                     ein lokales Extremum sein (Standard = 1).
         // ─────────────────────────────────────────────────────────────────────
+        // v2.12.0 – Pivot-Cache-Wrapper: reduziert redundante Berechnungen innerhalb einer Bar
         private List<PivotPoint> GetRecentPivots(int lookbackBars, int leftRightStrength = 1)
+        {
+            DateTime barTime = Bars.OpenTimes.LastValue;
+            if (barTime != _pivotCacheBarTime)
+            {
+                _pivotCache.Clear();
+                _pivotCacheBarTime = barTime;
+            }
+
+            int cacheKey = lookbackBars * 10 + leftRightStrength;
+            List<PivotPoint> cached;
+            if (!_pivotCache.TryGetValue(cacheKey, out cached))
+            {
+                cached = ComputePivots(lookbackBars, leftRightStrength);
+                _pivotCache[cacheKey] = cached;
+            }
+            return cached;
+        }
+
+        private List<PivotPoint> ComputePivots(int lookbackBars, int leftRightStrength = 1)
         {
             var result = new List<PivotPoint>();
             int safe   = Math.Min(lookbackBars, Bars.Count - leftRightStrength - 2);
@@ -2748,17 +2835,18 @@ namespace cAlgo.Robots
         /// </summary>
         private void LogScoreBreakdown(TradeType direction, int totalScore)
         {
+            int[] cache = direction == TradeType.Buy ? _cachedLongModuleScores : _cachedShortModuleScores;
             Print("[ScoreBreakdown {0}] Total={1}/{2} (min={3}) | " +
                   "EMA={4} BB={5} ST={6} PA={7} FIB={8} OSC={9} SR={10} MACD={11}",
                 direction, totalScore, _maxPossibleScore, _minRequiredScore,
-                EnableEmaModule        ? ScoreEma(direction,               false).ToString() : "off",
-                EnableBbModule         ? ScoreBollingerBands(direction,    false).ToString() : "off",
-                EnableSupertrendModule ? ScoreSupertrend(direction,        false).ToString() : "off",
-                EnablePatternsModule   ? ScorePatterns(direction,          false).ToString() : "off",
-                EnableFiboModule       ? ScoreFibonacci(direction,         false).ToString() : "off",
-                EnableOscModule        ? ScoreOscillators(direction,       false).ToString() : "off",
-                EnableSrModule         ? ScoreSupportResistance(direction, false).ToString() : "off",
-                EnableMacdModule       ? ScoreMacd(direction,              false).ToString() : "off");
+                EnableEmaModule        ? cache[0].ToString() : "off",
+                EnableBbModule         ? cache[1].ToString() : "off",
+                EnableSupertrendModule ? cache[2].ToString() : "off",
+                EnablePatternsModule   ? cache[3].ToString() : "off",
+                EnableFiboModule       ? cache[4].ToString() : "off",
+                EnableOscModule        ? cache[5].ToString() : "off",
+                EnableSrModule         ? cache[6].ToString() : "off",
+                EnableMacdModule       ? cache[7].ToString() : "off");
         }
 
         private void LogTradeState()
