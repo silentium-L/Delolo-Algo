@@ -691,6 +691,9 @@ namespace cAlgo.Robots
         private DateTime _startTime;
         private int      _totalTradesOpened = 0;
 
+        // v2.13.0 – P5: Rejection-Log-Throttle – max 1x per bar per reason
+        private readonly Dictionary<string, DateTime> _lastRejectionPrint = new Dictionary<string, DateTime>();
+
         // v2.13.0 – P2: Trade Attribution Tracking
         private double[] _attrSumScoresWin  = new double[9];
         private double[] _attrSumScoresLoss = new double[9];
@@ -1886,8 +1889,9 @@ namespace cAlgo.Robots
 
                 if (now < start || now >= end)
                 {
-                    if (logRejections) Print("Trade rejected [{0}]: Session filter. ServerTime={1:HH:mm} not in {2:hh\\:mm}–{3:hh\\:mm}.",
-                        direction, Server.Time, start, end);
+                    if (logRejections && ShouldLogRejection("SessionFilter"))
+                        Print("Trade rejected [{0}]: Session filter. ServerTime={1:HH:mm} not in {2:hh\\:mm}–{3:hh\\:mm}.",
+                            direction, Server.Time, start, end);
                     return false;
                 }
             }
@@ -1897,23 +1901,26 @@ namespace cAlgo.Robots
                 TimeSpan weekendCloseTime = new TimeSpan(WeekendCloseHour, WeekendCloseMinute, 0);
                 if (Server.Time.TimeOfDay >= weekendCloseTime)
                 {
-                    if (logRejections) Print("Trade rejected [{0}]: New trades blocked on Friday after {1:hh\\:mm}.",
-                        direction, weekendCloseTime);
+                    if (logRejections && ShouldLogRejection("FridayBlock"))
+                        Print("Trade rejected [{0}]: New trades blocked on Friday after {1:hh\\:mm}.",
+                            direction, weekendCloseTime);
                     return false;
                 }
             }
 
             if (Server.Time < _cooldownEndTime)
             {
-                if (logRejections) Print("Trade rejected [{0}]: Cooldown aktiv bis {1:HH:mm}.",
-                    direction, _cooldownEndTime);
+                if (logRejections && ShouldLogRejection("Cooldown"))
+                    Print("Trade rejected [{0}]: Cooldown aktiv bis {1:HH:mm}.",
+                        direction, _cooldownEndTime);
                 return false;
             }
 
             if (MaxTradesPerDay > 0 && _tradesToday >= MaxTradesPerDay)
             {
-                if (logRejections) Print("Trade rejected [{0}]: Max Trades pro Tag ({1}) erreicht.",
-                    direction, MaxTradesPerDay);
+                if (logRejections && ShouldLogRejection("MaxTrades"))
+                    Print("Trade rejected [{0}]: Max Trades pro Tag ({1}) erreicht.",
+                        direction, MaxTradesPerDay);
                 return false;
             }
 
@@ -1922,8 +1929,9 @@ namespace cAlgo.Robots
                 TimeWindow activeWindow;
                 if (IsInsideNewsWindow(Server.Time.TimeOfDay, out activeWindow))
                 {
-                    if (logRejections) Print("Trade rejected [{0}]: News-Fenster ({1:hh\\:mm}-{2:hh\\:mm}).",
-                        direction, activeWindow.Start, activeWindow.End);
+                    if (logRejections && ShouldLogRejection("News"))
+                        Print("Trade rejected [{0}]: News-Fenster ({1:hh\\:mm}-{2:hh\\:mm}).",
+                            direction, activeWindow.Start, activeWindow.End);
                     return false;
                 }
             }
@@ -1934,8 +1942,9 @@ namespace cAlgo.Robots
                 double currentDayRangePips = CalculateCurrentDayRangePips();
                 if (adrPips > 0 && currentDayRangePips > adrPips * MaxAdrRatio)
                 {
-                    if (logRejections) Print("Trade rejected [{0}]: Volatility Filter. Heutige Range ({1:F1}p) ueberschreitet ADR-Limit ({2:F1}p * {3:F1}).",
-                        direction, currentDayRangePips, adrPips, MaxAdrRatio);
+                    if (logRejections && ShouldLogRejection("Volatility"))
+                        Print("Trade rejected [{0}]: Volatility Filter. Heutige Range ({1:F1}p) ueberschreitet ADR-Limit ({2:F1}p * {3:F1}).",
+                            direction, currentDayRangePips, adrPips, MaxAdrRatio);
                     return false;
                 }
             }
@@ -1943,8 +1952,9 @@ namespace cAlgo.Robots
             double spreadPips = (Symbol.Ask - Symbol.Bid) / Symbol.PipSize;
             if (spreadPips > MaxAllowedSpread)
             {
-                if (logRejections) Print("Trade rejected [{0}]: Spread {1:F2} > MaxAllowedSpread {2:F1} pips.",
-                    direction, spreadPips, MaxAllowedSpread);
+                if (logRejections && ShouldLogRejection("Spread"))
+                    Print("Trade rejected [{0}]: Spread {1:F2} > MaxAllowedSpread {2:F1} pips.",
+                        direction, spreadPips, MaxAllowedSpread);
                 return false;
             }
 
@@ -1955,12 +1965,14 @@ namespace cAlgo.Robots
 
                 if (direction == TradeType.Buy && htfClose < htfEma)
                 {
-                    if (logRejections) Print("Trade rejected [Long]: HTF filter. HTF close {0:F5} < HTF EMA {1:F5}.", htfClose, htfEma);
+                    if (logRejections && ShouldLogRejection("HTFLong"))
+                        Print("Trade rejected [Long]: HTF filter. HTF close {0:F5} < HTF EMA {1:F5}.", htfClose, htfEma);
                     return false;
                 }
                 if (direction == TradeType.Sell && htfClose > htfEma)
                 {
-                    if (logRejections) Print("Trade rejected [Short]: HTF filter. HTF close {0:F5} > HTF EMA {1:F5}.", htfClose, htfEma);
+                    if (logRejections && ShouldLogRejection("HTFShort"))
+                        Print("Trade rejected [Short]: HTF filter. HTF close {0:F5} > HTF EMA {1:F5}.", htfClose, htfEma);
                     return false;
                 }
             }
@@ -1981,8 +1993,9 @@ namespace cAlgo.Robots
                 ? (totalUnrealised / Account.Balance) * 100.0 : 0;
             if (exposurePct >= MaxFloatingLossPercent)
             {
-                if (logRejections) Print("Trade rejected [{0}]: Max floating loss {1:F2}% >= limit {2:F1}%.",
-                    direction, exposurePct, MaxFloatingLossPercent);
+                if (logRejections && ShouldLogRejection("FloatingLoss"))
+                    Print("Trade rejected [{0}]: Max floating loss {1:F2}% >= limit {2:F1}%.",
+                        direction, exposurePct, MaxFloatingLossPercent);
                 return false;
             }
 
@@ -1994,14 +2007,16 @@ namespace cAlgo.Robots
 
                 if (double.IsNaN(adxVal))
                 {
-                    if (logRejections) Print("Trade rejected [{0}]: ADX value invalid (NaN).", direction);
+                    if (logRejections && ShouldLogRejection("ADXInvalid"))
+                        Print("Trade rejected [{0}]: ADX value invalid (NaN).", direction);
                     return false;
                 }
 
                 if (adxVal < MinAdxValue)
                 {
-                    if (logRejections) Print("Trade rejected [{0}]: ADX {1:F1} < MinAdxValue {2:F1} (chop filter).",
-                        direction, adxVal, MinAdxValue);
+                    if (logRejections && ShouldLogRejection("ADXValue"))
+                        Print("Trade rejected [{0}]: ADX {1:F1} < MinAdxValue {2:F1} (chop filter).",
+                            direction, adxVal, MinAdxValue);
                     return false;
                 }
 
@@ -2010,8 +2025,9 @@ namespace cAlgo.Robots
                     bool aligned = direction == TradeType.Buy ? diPlus > diMinus : diMinus > diPlus;
                     if (!aligned)
                     {
-                        if (logRejections) Print("Trade rejected [{0}]: DI not aligned (DI+={1:F1} DI-={2:F1}).",
-                            direction, diPlus, diMinus);
+                        if (logRejections && ShouldLogRejection("DIAlignment"))
+                            Print("Trade rejected [{0}]: DI not aligned (DI+={1:F1} DI-={2:F1}).",
+                                direction, diPlus, diMinus);
                         return false;
                     }
                 }
@@ -3477,6 +3493,17 @@ namespace cAlgo.Robots
         // ════════════════════════════════════════════════════════════════════
         //  VERBOSE LOGGING HELPERS
         // ════════════════════════════════════════════════════════════════════
+
+        // Returns true and records bar-time only on first call per reason per bar.
+        private bool ShouldLogRejection(string reason)
+        {
+            DateTime barTime = Bars.OpenTimes.Last(1);
+            DateTime last;
+            if (_lastRejectionPrint.TryGetValue(reason, out last) && last >= barTime)
+                return false;
+            _lastRejectionPrint[reason] = barTime;
+            return true;
+        }
 
         private void LogMarketFilterSummary(TradeType direction, bool tradable)
         {
