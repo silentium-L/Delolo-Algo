@@ -2,7 +2,7 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  3.1.7 (Session/DoW Attribution Matrix)
+//  Version      │  3.1.8 (Backtest-Mode Persistence Flag)
 // ═══════════════════════════════════════════════════════════════════════════════
 //  CHANGELOG
 //  ──────────────────────────────────────────────────────────────────────────────
@@ -16,6 +16,7 @@
 //          P1-4: AttributionLogFilePath appends CSV to file; header auto-written.
 //  v3.1.7  P2-1: EnableSessionAttribution – Session×DoW win-rate/avgPnL matrix in OnStop.
 //          GetSessionBucket (Asia/London/Overlap/NY) + GetDowBucket helpers.
+//  v3.1.8  P2-2: DisablePersistenceIO (default=false) skips all File I/O in Persistence.cs.
 
 
 using System;
@@ -238,7 +239,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.7  │  Starting           ║");
+            Print("║   10-Fold Bot  v3.1.8  │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -288,8 +289,11 @@ namespace cAlgo.Robots
                 EnableSrModule         ? "on" : "off",
                 EnableMacdModule       ? "on" : "off",
                 EnableAdxScoreModule   ? "on" : "off");
-            Print("BUILD: v3.1.7 | Modules={0} | MaxScore={1} | MinReq={2}",
+            Print("BUILD: v3.1.8 | Modules={0} | MaxScore={1} | MinReq={2}",
                 modulesList, _maxPossibleScore, _minRequiredScore);
+
+            if (DisablePersistenceIO)
+                Print("BACKTEST MODE: All Persistence I/O disabled. No JSON files will be read or written this session.");
 
             Print("Dashboard: {0} | Corner: {1}", ShowDashboard ? "ON" : "OFF", DashboardCorner);
             Print("Risk range: {0:F2}% – {1:F2}% | SL: {2} | TP: {3}",
@@ -319,7 +323,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.7  │  Stopped            ║");
+            Print("║   10-Fold Bot  v3.1.8  │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -1189,7 +1193,7 @@ namespace cAlgo.Robots
             string line = "─────────────────────────────";
             string text =
                 "╔═══════════════════════════╗"  + nl +
-                "║  10-FOLD BOT  v3.1.7      ║"  + nl +
+                "║  10-FOLD BOT  v3.1.8      ║"  + nl +
                 "╚═══════════════════════════╝"  + nl +
                 string.Format("  Status   : {0}", botStatus)              + nl +
                 line                                                        + nl +

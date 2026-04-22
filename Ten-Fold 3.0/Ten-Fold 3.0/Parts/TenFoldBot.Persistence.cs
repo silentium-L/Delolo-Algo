@@ -19,6 +19,7 @@ namespace cAlgo.Robots
         // ─────────────────────────────────────────────────────────────────────
         private void LoadPersistedState()
         {
+            if (DisablePersistenceIO) return;
             _persistedTodayLoaded = false;
             string dateKey = Server.Time.ToString("yyyyMMdd");
             string filePath = GetStateFilePath(dateKey);
@@ -56,6 +57,7 @@ namespace cAlgo.Robots
         // ─────────────────────────────────────────────────────────────────────
         private void PersistDailyState()
         {
+            if (DisablePersistenceIO) return;
             try
             {
                 string dateKey = Server.Time.ToString("yyyyMMdd");
@@ -90,6 +92,7 @@ namespace cAlgo.Robots
         // ─────────────────────────────────────────────────────────────────────
         private void PersistTradeState()
         {
+            if (DisablePersistenceIO) return;
             if (_currentTrade == null)
                 return;
 
@@ -113,6 +116,7 @@ namespace cAlgo.Robots
 
         private TradeState LoadPersistedTradeState()
         {
+            if (DisablePersistenceIO) return null;
             try
             {
                 string filePath = GetTradeStateFilePath();
@@ -132,6 +136,7 @@ namespace cAlgo.Robots
 
         private void DeletePersistedTradeState()
         {
+            if (DisablePersistenceIO) return;
             try
             {
                 string filePath = GetTradeStateFilePath();
@@ -146,6 +151,7 @@ namespace cAlgo.Robots
 
         private void PersistWeeklyState()
         {
+            if (DisablePersistenceIO) return;
             if (MaxWeeklyDrawdownPercent <= 0)
                 return;
 
@@ -205,6 +211,7 @@ namespace cAlgo.Robots
         // ─────────────────────────────────────────────────────────────────────
         private void CleanupOldStateFiles(int keepDays = 30)
         {
+            if (DisablePersistenceIO) return;
             try
             {
                 string dir = GetStateBaseDirectory();

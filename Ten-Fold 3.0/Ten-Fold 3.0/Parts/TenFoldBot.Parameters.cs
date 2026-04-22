@@ -13,6 +13,11 @@ namespace cAlgo.Robots
         //  PARAMETERS
         // ════════════════════════════════════════════════════════════════════
 
+        // ── 00 · Runtime Mode ────────────────────────────────────────────────
+        [Parameter("Disable All Persistence I/O (for Backtests)",
+            Group = "00 · Runtime Mode", DefaultValue = false)]
+        public bool DisablePersistenceIO { get; set; }
+
         // ── 01 · Time & Day Filter ───────────────────────────────────────────
         [Parameter("Enable Time Filter",
             Group = "01 · Time & Day Filter", DefaultValue = true)]
