@@ -402,7 +402,7 @@ namespace cAlgo.Robots
             Group = "13 · Position Sizing & Risk", DefaultValue = 1.0, MinValue = 0.5, MaxValue = 1.0, Step = 0.05)]
         public double ConsecLossSizeReducer { get; set; }
 
-        [Parameter("Estimated Commission Pips (0 = use Symbol.Commission if available)",
+        [Parameter("Estimated Commission Pips (both sides, 0 = ignore)",
             Group = "13 · Position Sizing & Risk", DefaultValue = 0.0, MinValue = 0.0, Step = 0.1)]
         public double EstimatedCommissionPips { get; set; }
 
@@ -1377,17 +1377,8 @@ namespace cAlgo.Robots
 
         private void DeletePersistedTradeState()
         {
-            try
-            {
-                string[] keys = {
-                    "10fold_trade_id", "10fold_trade_entry", "10fold_trade_slpips",
-                    "10fold_trade_initvol", "10fold_trade_be", "10fold_trade_p1",
-                    "10fold_trade_p2", "10fold_trade_p3", "10fold_trade_intervals",
-                    "10fold_trade_atrentry", "10fold_trade_entrytime"
-                };
-                foreach (var k in keys)
-                    ObjectStore.Remove(k);
-            }
+            // IObjectStore has no Remove() – set sentinel "0" so LoadPersistedTradeState returns null (posId <= 0 guard)
+            try { ObjectStore.SetValue("10fold_trade_id", "0"); }
             catch (Exception ex) { Print("  [!] DeletePersistedTradeState error: {0}", ex.Message); }
         }
 
@@ -3038,11 +3029,9 @@ namespace cAlgo.Robots
                 tpLabel = tpPips > 0 ? tpPips.ToString("F1") + "p" : "Runner";
             }
 
-            double rrr        = (tpPips > 0 && slPips > 0) ? tpPips / slPips : 0;
+            double rrr         = (tpPips > 0 && slPips > 0) ? tpPips / slPips : 0;
             double entrySpreadP = (Symbol.Ask - Symbol.Bid) / Symbol.PipSize;
-            double commPips   = EstimatedCommissionPips;
-            if (commPips <= 0 && Symbol.Commission > 0 && Symbol.PipValue > 0 && Symbol.LotSize > 0)
-                commPips = (Symbol.Commission * 2.0) / (Symbol.PipValue * Symbol.LotSize);
+            double commPips    = EstimatedCommissionPips; // set EstimatedCommissionPips > 0 to include commission in eff. R:R
             double effRrr = (tpPips > 0 && slPips > 0)
                 ? (tpPips - entrySpreadP - commPips) / (slPips + entrySpreadP + commPips)
                 : 0;
