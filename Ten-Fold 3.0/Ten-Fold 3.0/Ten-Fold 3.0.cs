@@ -2,7 +2,7 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  3.2.0 (Setup-Adaptive RRR)
+//  Version      │  3.2.1 (Slippage Tracking)
 // ═══════════════════════════════════════════════════════════════════════════════
 //  CHANGELOG
 //  ──────────────────────────────────────────────────────────────────────────────
@@ -19,6 +19,7 @@
 //  v3.1.8  P2-2: DisablePersistenceIO (default=false) skips all File I/O in Persistence.cs.
 //  v3.2.0  P2-3: EnableSetupAdaptiveRrr; ClassifySetup (Trend/MR/Mixed via module cache);
 //          RrrTargetTrend=2.5, RrrTargetMr=1.5, RrrTargetMixed=2.0; Setup= logged on entry.
+//  v3.2.1  P3-1: EnableSlippageTracking; entry+exit pip-slippage logged + OnStop summary.
 
 
 using System;
@@ -197,6 +198,13 @@ namespace cAlgo.Robots
         private double[,] _sessionLossCount = new double[5, 4];
         private double[,] _sessionPnlSum    = new double[5, 4];
 
+        // v3.2.1 – Slippage Tracking
+        private double _slippageSumPipsEntry = 0;
+        private double _slippageSumPipsExit  = 0;
+        private int    _slippageCountEntry   = 0;
+        private int    _slippageCountExit    = 0;
+        private double _slippageMaxAbsPips   = 0;
+
         // VWAP Cache – einmal pro Bar in OnBar() berechnet
         private double   _cachedVwap      = 0;
         private int      _cachedLongScore  = 0;
@@ -241,7 +249,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.2.0  │  Starting           ║");
+            Print("║   10-Fold Bot  v3.2.1  │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -291,7 +299,7 @@ namespace cAlgo.Robots
                 EnableSrModule         ? "on" : "off",
                 EnableMacdModule       ? "on" : "off",
                 EnableAdxScoreModule   ? "on" : "off");
-            Print("BUILD: v3.2.0 | Modules={0} | MaxScore={1} | MinReq={2}",
+            Print("BUILD: v3.2.1 | Modules={0} | MaxScore={1} | MinReq={2}",
                 modulesList, _maxPossibleScore, _minRequiredScore);
 
             if (DisablePersistenceIO)
@@ -325,7 +333,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.2.0  │  Stopped            ║");
+            Print("║   10-Fold Bot  v3.2.1  │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -391,6 +399,19 @@ namespace cAlgo.Robots
                             dowNames[d], sesNames[s], (int)n, wr, avg);
                     }
                 }
+            }
+
+            // v3.2.1 – Slippage Summary
+            if (EnableSlippageTracking && (_slippageCountEntry + _slippageCountExit) > 0)
+            {
+                Print("── Slippage Summary ──────────────────────────────────");
+                if (_slippageCountEntry > 0)
+                    Print("  Entries: n={0} avg={1:+0.00;-0.00;0.00}p",
+                        _slippageCountEntry, _slippageSumPipsEntry / _slippageCountEntry);
+                if (_slippageCountExit > 0)
+                    Print("  Exits  : n={0} avg≈{1:+0.00;-0.00;0.00}p (force-close only)",
+                        _slippageCountExit, _slippageSumPipsExit / _slippageCountExit);
+                Print("  Max |slip|: {0:F2}p", _slippageMaxAbsPips);
             }
         }
 
@@ -1195,7 +1216,7 @@ namespace cAlgo.Robots
             string line = "─────────────────────────────";
             string text =
                 "╔═══════════════════════════╗"  + nl +
-                "║  10-FOLD BOT  v3.2.0      ║"  + nl +
+                "║  10-FOLD BOT  v3.2.1      ║"  + nl +
                 "╚═══════════════════════════╝"  + nl +
                 string.Format("  Status   : {0}", botStatus)              + nl +
                 line                                                        + nl +
@@ -1781,6 +1802,8 @@ namespace cAlgo.Robots
                 tpPips > 0 ? tpPips.ToString("F1") + "p" : "Runner (no TP)",
                 volumeInUnits, volumeInUnits / Symbol.LotSize);
 
+            double expectedEntryPrice = direction == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
+
             var result = ExecuteMarketOrder(
                 direction, SymbolName, volumeInUnits, BotLabel,
                 slPips, tpPips > 0 ? (double?)tpPips : null);
@@ -1789,6 +1812,20 @@ namespace cAlgo.Robots
             {
                 Print("TryOpenTrade: Order FAILED! Error={0}", result.Error);
                 return;
+            }
+
+            if (EnableSlippageTracking)
+            {
+                double actualEntryPrice = result.Position.EntryPrice;
+                double slipEntry = direction == TradeType.Buy
+                    ? (actualEntryPrice - expectedEntryPrice) / Symbol.PipSize
+                    : (expectedEntryPrice - actualEntryPrice) / Symbol.PipSize;
+                _slippageSumPipsEntry += slipEntry;
+                _slippageCountEntry++;
+                if (Math.Abs(slipEntry) > _slippageMaxAbsPips)
+                    _slippageMaxAbsPips = Math.Abs(slipEntry);
+                Print("Slippage ENTRY: expected={0:F5} actual={1:F5} slip={2:+0.00;-0.00;0.00}p",
+                    expectedEntryPrice, actualEntryPrice, slipEntry);
             }
 
             // ATR bei Entry einfrieren, falls IntervalLot im ATR-Mode arbeitet
@@ -2331,11 +2368,31 @@ namespace cAlgo.Robots
                 return;
             }
 
+            double expectedExitPrice = pos.TradeType == TradeType.Buy ? Symbol.Bid : Symbol.Ask;
+
             var result = ClosePosition(pos);
             if (result.IsSuccessful)
             {
                 Print("ForceClose ({0}): Position {1} closed. PnL={2:F2} {3}",
                     reason, pos.Id, result.Position?.NetProfit ?? 0, Account.Asset.Name);
+
+                if (EnableSlippageTracking && result.Position != null)
+                {
+                    double pnlPips  = result.Position.NetProfit / (Symbol.PipValue * result.Position.VolumeInUnits);
+                    double actualExit = result.Position.TradeType == TradeType.Buy
+                        ? result.Position.EntryPrice + pnlPips * Symbol.PipSize
+                        : result.Position.EntryPrice - pnlPips * Symbol.PipSize;
+                    double slipExit = result.Position.TradeType == TradeType.Buy
+                        ? (expectedExitPrice - actualExit) / Symbol.PipSize
+                        : (actualExit - expectedExitPrice) / Symbol.PipSize;
+                    _slippageSumPipsExit += slipExit;
+                    _slippageCountExit++;
+                    if (Math.Abs(slipExit) > _slippageMaxAbsPips)
+                        _slippageMaxAbsPips = Math.Abs(slipExit);
+                    Print("Slippage EXIT: expected={0:F5} actual≈{1:F5} slip={2:+0.00;-0.00;0.00}p (reason={3})",
+                        expectedExitPrice, actualExit, slipExit, reason);
+                }
+
                 _currentTrade = null;
             }
             else
