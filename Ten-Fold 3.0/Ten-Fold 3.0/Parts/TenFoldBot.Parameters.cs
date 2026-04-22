@@ -311,6 +311,10 @@ namespace cAlgo.Robots
             Group = "12 · Scoring & Consensus", DefaultValue = "")]
         public string AttributionLogFilePath { get; set; }
 
+        [Parameter("Enable Session/DoW Attribution",
+            Group = "12 · Scoring & Consensus", DefaultValue = false)]
+        public bool EnableSessionAttribution { get; set; }
+
         // ── 12b · Category Caps (v2.12.0) ──────────────────────────────────────
         [Parameter("Scoring Preset (DecorrelatedDefault overrides caps on start)",
             Group = "12b · Category Caps", DefaultValue = ScoringPreset.Custom)]

@@ -2,7 +2,7 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  3.1.6 (Quant-Hardening P0-2…P1-4)
+//  Version      │  3.1.7 (Session/DoW Attribution Matrix)
 // ═══════════════════════════════════════════════════════════════════════════════
 //  CHANGELOG
 //  ──────────────────────────────────────────────────────────────────────────────
@@ -14,6 +14,8 @@
 //          P1-2: EnableRProgressTimeStop exits when currentR < MinRProgress after N bars.
 //          P1-3: EnableVolTargetedSizing scales risk by Baseline/ATR (clamped 0.5–2.0).
 //          P1-4: AttributionLogFilePath appends CSV to file; header auto-written.
+//  v3.1.7  P2-1: EnableSessionAttribution – Session×DoW win-rate/avgPnL matrix in OnStop.
+//          GetSessionBucket (Asia/London/Overlap/NY) + GetDowBucket helpers.
 
 
 using System;
@@ -187,6 +189,11 @@ namespace cAlgo.Robots
         private double[,] _attrScoreWinByBucket  = new double[9, 4];
         private double[,] _attrScoreLossByBucket = new double[9, 4];
 
+        // v3.1.7 – Session × DoW Attribution (5 weekdays × 4 sessions)
+        private double[,] _sessionWinCount  = new double[5, 4];
+        private double[,] _sessionLossCount = new double[5, 4];
+        private double[,] _sessionPnlSum    = new double[5, 4];
+
         // VWAP Cache – einmal pro Bar in OnBar() berechnet
         private double   _cachedVwap      = 0;
         private int      _cachedLongScore  = 0;
@@ -231,7 +238,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.6  │  Starting           ║");
+            Print("║   10-Fold Bot  v3.1.7  │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -281,7 +288,7 @@ namespace cAlgo.Robots
                 EnableSrModule         ? "on" : "off",
                 EnableMacdModule       ? "on" : "off",
                 EnableAdxScoreModule   ? "on" : "off");
-            Print("BUILD: v3.1.6 | Modules={0} | MaxScore={1} | MinReq={2}",
+            Print("BUILD: v3.1.7 | Modules={0} | MaxScore={1} | MinReq={2}",
                 modulesList, _maxPossibleScore, _minRequiredScore);
 
             Print("Dashboard: {0} | Corner: {1}", ShowDashboard ? "ON" : "OFF", DashboardCorner);
@@ -290,6 +297,7 @@ namespace cAlgo.Robots
             Print("Trailing: {0} | BE: {1} (trigger {2:F1}R +{3:F1}p offset)",
                 TrailingStopType, EnableBreakEven ? "ON" : "OFF", BeRMultiple, BeOffsetPips);
             Print("VerboseScoreLogging: {0}", EnableVerboseScoreLogging ? "ON" : "OFF");
+            Print("SessionAttribution: {0}", EnableSessionAttribution ? "ON" : "OFF");
 
             // v2.8.0 – Interval-Lot-TP Config-Log
             if (TakeProfitMethod == TpMethod.IntervalLot)
@@ -311,7 +319,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.6  │  Stopped            ║");
+            Print("║   10-Fold Bot  v3.1.7  │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -352,6 +360,29 @@ namespace cAlgo.Robots
                         if ((w + l) >= 5)
                             Print("  {0,-6} score={1} n={2,3} winRate={3:P1}",
                                 names[m], b, (int)(w + l), wr);
+                    }
+                }
+            }
+
+            // v3.1.7 – Session × DoW Attribution
+            if (EnableSessionAttribution)
+            {
+                string[] dowNames = { "Mon", "Tue", "Wed", "Thu", "Fri" };
+                string[] sesNames = { "Asia", "London", "Overlap", "NY" };
+                Print("── Session × Day-of-Week Edge ────────────────────────");
+                Print("  Day    Session    n    winRate   avgPnL");
+                for (int d = 0; d < 5; d++)
+                {
+                    for (int s = 0; s < 4; s++)
+                    {
+                        double w = _sessionWinCount[d, s];
+                        double l = _sessionLossCount[d, s];
+                        double n = w + l;
+                        if (n < 3) continue;
+                        double wr  = w / n;
+                        double avg = _sessionPnlSum[d, s] / n;
+                        Print("  {0,-4}   {1,-7}  {2,3}   {3:P1}    {4:+0.00;-0.00;0.00}",
+                            dowNames[d], sesNames[s], (int)n, wr, avg);
                     }
                 }
             }
@@ -1061,6 +1092,26 @@ namespace cAlgo.Robots
                 }
             }
 
+            // v3.1.7 – Session × DoW Attribution
+            if (EnableSessionAttribution
+                && _currentTrade != null
+                && args.Position.Id == _currentTrade.PositionId)
+            {
+                DateTime entryT = _currentTrade.EntryTime != DateTime.MinValue
+                    ? _currentTrade.EntryTime
+                    : args.Position.EntryTime;
+                if (_currentTrade.EntryTime == DateTime.MinValue)
+                    Print("WARNING SessionAttribution: EntryTime missing – using position.EntryTime as fallback.");
+                int dow = GetDowBucket(entryT);
+                int ses = GetSessionBucket(entryT);
+                if (dow >= 0)
+                {
+                    if (args.Position.NetProfit >= 0) _sessionWinCount[dow, ses]++;
+                    else                              _sessionLossCount[dow, ses]++;
+                    _sessionPnlSum[dow, ses] += args.Position.NetProfit;
+                }
+            }
+
             // State-Null-Konsistenz: closed trade → clear in-memory state so stale
             // references cannot leak into the next entry cycle.
             if (_currentTrade != null && args.Position.Id == _currentTrade.PositionId)
@@ -1138,7 +1189,7 @@ namespace cAlgo.Robots
             string line = "─────────────────────────────";
             string text =
                 "╔═══════════════════════════╗"  + nl +
-                "║  10-FOLD BOT  v3.1.6      ║"  + nl +
+                "║  10-FOLD BOT  v3.1.7      ║"  + nl +
                 "╚═══════════════════════════╝"  + nl +
                 string.Format("  Status   : {0}", botStatus)              + nl +
                 line                                                        + nl +
@@ -2272,6 +2323,25 @@ namespace cAlgo.Robots
             }
             else
                 Print("ForceClose ({0}): ClosePosition failed! Error={1}", reason, result.Error);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  Session / DoW helpers (v3.1.7)
+        // ─────────────────────────────────────────────────────────────────────
+        private int GetSessionBucket(DateTime t)
+        {
+            int h = t.Hour;
+            if (h < 8)  return 0;
+            if (h < 13) return 1;
+            if (h < 17) return 2;
+            return 3;
+        }
+
+        private int GetDowBucket(DateTime t)
+        {
+            int dow = (int)t.DayOfWeek; // Sun=0, Mon=1, … Sat=6
+            if (dow == 0 || dow == 6) return -1;
+            return dow - 1; // Mon=0 … Fri=4
         }
 
         #endregion // Trade Management
