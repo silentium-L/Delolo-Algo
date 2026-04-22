@@ -7,6 +7,8 @@
 
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
+using System.IO;
 using cAlgo.API;
 using cAlgo.API.Indicators;
 using cAlgo.API.Internals;
@@ -59,6 +61,21 @@ namespace cAlgo.Robots
         public double  EntryAtrPips      { get; set; }
         public string  EntryHtfRegime    { get; set; }  // BULL/BEAR/NA
         public double  EntryAdxValue     { get; set; }
+    }
+
+    internal class DailyState
+    {
+        public string Date                  { get; set; }
+        public double DayStartEquity        { get; set; }
+        public int    TradesToday           { get; set; }
+        public int    ConsecutiveLosses     { get; set; }
+        public DateTime CooldownEndTime     { get; set; }
+    }
+
+    internal class WeeklyState
+    {
+        public string WeekStart             { get; set; }
+        public double WeekStartEquity       { get; set; }
     }
 
 
@@ -1203,54 +1220,30 @@ namespace cAlgo.Robots
         }
 
         // ─────────────────────────────────────────────────────────────────────
-        //  LoadPersistedState – ObjectStore
+        //  LoadPersistedState – JSON File Based
         // ─────────────────────────────────────────────────────────────────────
         private void LoadPersistedState()
         {
             _persistedTodayLoaded = false;
             string dateKey = Server.Time.ToString("yyyyMMdd");
+            string filePath = GetStateFilePath(dateKey);
 
             try
             {
-                string equityKey = "10fold_equity_" + dateKey;
-                string tradesKey = "10fold_trades_" + dateKey;
-                string lossKey   = "10fold_consecloss";
-                string cooldownKey = "10fold_cooldown";
+                if (!File.Exists(filePath))
+                    return;
 
-                object equityObj = ObjectStore.GetValue(equityKey);
-                object tradesObj = ObjectStore.GetValue(tradesKey);
-                object lossObj   = ObjectStore.GetValue(lossKey);
-                object cooldownObj = ObjectStore.GetValue(cooldownKey);
+                string json = File.ReadAllText(filePath);
+                var state = JsonSerializer.Deserialize<DailyState>(json);
 
-                bool loaded = false;
-                if (equityObj != null && double.TryParse(equityObj.ToString(), System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double equity))
+                if (state != null && state.Date == dateKey)
                 {
-                    _dayStartEquity = equity;
-                    loaded = true;
-                }
-
-                if (tradesObj != null && int.TryParse(tradesObj.ToString(), out int trades))
-                {
-                    _tradesToday = trades;
-                }
-
-                if (lossObj != null && int.TryParse(lossObj.ToString(), out int loss))
-                {
-                    _consecutiveLosses = loss;
-                }
-
-                if (cooldownObj != null && DateTime.TryParseExact(cooldownObj.ToString(), "O",
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    System.Globalization.DateTimeStyles.RoundtripKind, out DateTime cooldown))
-                {
-                    if (cooldown > Server.Time)
-                        _cooldownEndTime = cooldown;
-                }
-
-                if (loaded)
-                {
+                    _dayStartEquity = state.DayStartEquity;
+                    _tradesToday = state.TradesToday;
+                    _consecutiveLosses = state.ConsecutiveLosses;
+                    _cooldownEndTime = state.CooldownEndTime;
                     _persistedTodayLoaded = true;
+
                     Print("  [✓] Loaded persisted daily state: Equity={0:F2} {1}, Trades={2}, ConsecLoss={3}",
                         _dayStartEquity, Account.Asset.Name, _tradesToday, _consecutiveLosses);
                 }
@@ -1263,23 +1256,30 @@ namespace cAlgo.Robots
         }
 
         // ─────────────────────────────────────────────────────────────────────
-        //  PersistDailyState – ObjectStore
+        //  PersistDailyState – JSON File Based
         // ─────────────────────────────────────────────────────────────────────
         private void PersistDailyState()
         {
             try
             {
                 string dateKey = Server.Time.ToString("yyyyMMdd");
-                string equityKey = "10fold_equity_" + dateKey;
-                string tradesKey = "10fold_trades_" + dateKey;
-                string lossKey   = "10fold_consecloss";
+                var state = new DailyState
+                {
+                    Date = dateKey,
+                    DayStartEquity = _dayStartEquity,
+                    TradesToday = _tradesToday,
+                    ConsecutiveLosses = _consecutiveLosses,
+                    CooldownEndTime = _cooldownEndTime
+                };
 
-                ObjectStore.SetValue(equityKey, _dayStartEquity.ToString("F4", System.Globalization.CultureInfo.InvariantCulture));
-                ObjectStore.SetValue(tradesKey, _tradesToday.ToString());
-                ObjectStore.SetValue(lossKey, _consecutiveLosses.ToString());
+                string filePath = GetStateFilePath(dateKey);
+                string directory = Path.GetDirectoryName(filePath);
+                if (!Directory.Exists(directory))
+                    Directory.CreateDirectory(directory);
 
-                if (_cooldownEndTime > Server.Time)
-                    ObjectStore.SetValue("10fold_cooldown", _cooldownEndTime.ToString("O"));
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                string json = JsonSerializer.Serialize(state, options);
+                File.WriteAllText(filePath, json);
             }
             catch (Exception ex)
             {
@@ -1293,80 +1293,38 @@ namespace cAlgo.Robots
         // ─────────────────────────────────────────────────────────────────────
         private void PersistTradeState()
         {
-            if (_currentTrade == null) return;
+            if (_currentTrade == null)
+                return;
+
             try
             {
-                var ci = System.Globalization.CultureInfo.InvariantCulture;
-                ObjectStore.SetValue("10fold_trade_id",        _currentTrade.PositionId.ToString());
-                ObjectStore.SetValue("10fold_trade_entry",     _currentTrade.EntryPrice.ToString("F8", ci));
-                ObjectStore.SetValue("10fold_trade_slpips",    _currentTrade.InitialSlPips.ToString("F4", ci));
-                ObjectStore.SetValue("10fold_trade_initvol",   _currentTrade.InitialVolume.ToString("F0", ci));
-                ObjectStore.SetValue("10fold_trade_be",        _currentTrade.BreakEvenDone ? "1" : "0");
-                ObjectStore.SetValue("10fold_trade_p1",        _currentTrade.Partial1Done  ? "1" : "0");
-                ObjectStore.SetValue("10fold_trade_p2",        _currentTrade.Partial2Done  ? "1" : "0");
-                ObjectStore.SetValue("10fold_trade_p3",        _currentTrade.Partial3Done  ? "1" : "0");
-                ObjectStore.SetValue("10fold_trade_intervals", _currentTrade.IntervalsTriggered.ToString());
-                ObjectStore.SetValue("10fold_trade_atrentry",  _currentTrade.IntervalAtrAtEntry.ToString("F8", ci));
-                ObjectStore.SetValue("10fold_trade_entrytime", _currentTrade.EntryTime.ToString("O"));
+                string filePath = GetTradeStateFilePath();
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                string json = JsonSerializer.Serialize(_currentTrade, options);
+
+                string directory = Path.GetDirectoryName(filePath);
+                if (!Directory.Exists(directory))
+                    Directory.CreateDirectory(directory);
+
+                File.WriteAllText(filePath, json);
             }
-            catch (Exception ex) { Print("  [!] PersistTradeState error: {0}", ex.Message); }
+            catch (Exception ex)
+            {
+                Print("  [!] PersistTradeState error: {0}", ex.Message);
+            }
         }
 
         private TradeState LoadPersistedTradeState()
         {
             try
             {
-                var ci = System.Globalization.CultureInfo.InvariantCulture;
-                object idObj = ObjectStore.GetValue("10fold_trade_id");
-                if (idObj == null) return null;
-                int posId;
-                if (!int.TryParse(idObj.ToString(), out posId) || posId <= 0) return null;
+                string filePath = GetTradeStateFilePath();
+                if (!File.Exists(filePath))
+                    return null;
 
-                var ts = new TradeState { PositionId = posId };
-
-                object v;
-                double d;
-                int    n;
-                DateTime dt;
-
-                v = ObjectStore.GetValue("10fold_trade_entry");
-                if (v != null && double.TryParse(v.ToString(), System.Globalization.NumberStyles.Float, ci, out d))
-                    ts.EntryPrice = d;
-
-                v = ObjectStore.GetValue("10fold_trade_slpips");
-                if (v != null && double.TryParse(v.ToString(), System.Globalization.NumberStyles.Float, ci, out d))
-                    ts.InitialSlPips = d;
-
-                v = ObjectStore.GetValue("10fold_trade_initvol");
-                if (v != null && double.TryParse(v.ToString(), System.Globalization.NumberStyles.Float, ci, out d))
-                    ts.InitialVolume = d;
-
-                v = ObjectStore.GetValue("10fold_trade_be");
-                ts.BreakEvenDone = (v != null && v.ToString() == "1");
-
-                v = ObjectStore.GetValue("10fold_trade_p1");
-                ts.Partial1Done = (v != null && v.ToString() == "1");
-
-                v = ObjectStore.GetValue("10fold_trade_p2");
-                ts.Partial2Done = (v != null && v.ToString() == "1");
-
-                v = ObjectStore.GetValue("10fold_trade_p3");
-                ts.Partial3Done = (v != null && v.ToString() == "1");
-
-                v = ObjectStore.GetValue("10fold_trade_intervals");
-                if (v != null && int.TryParse(v.ToString(), out n))
-                    ts.IntervalsTriggered = n;
-
-                v = ObjectStore.GetValue("10fold_trade_atrentry");
-                if (v != null && double.TryParse(v.ToString(), System.Globalization.NumberStyles.Float, ci, out d))
-                    ts.IntervalAtrAtEntry = d;
-
-                v = ObjectStore.GetValue("10fold_trade_entrytime");
-                if (v != null && DateTime.TryParseExact(v.ToString(), "O",
-                    ci, System.Globalization.DateTimeStyles.RoundtripKind, out dt))
-                    ts.EntryTime = dt;
-
-                return ts;
+                string json = File.ReadAllText(filePath);
+                var ts = JsonSerializer.Deserialize<TradeState>(json);
+                return ts?.PositionId > 0 ? ts : null;
             }
             catch (Exception ex)
             {
@@ -1377,9 +1335,16 @@ namespace cAlgo.Robots
 
         private void DeletePersistedTradeState()
         {
-            // IObjectStore has no Remove() – set sentinel "0" so LoadPersistedTradeState returns null (posId <= 0 guard)
-            try { ObjectStore.SetValue("10fold_trade_id", "0"); }
-            catch (Exception ex) { Print("  [!] DeletePersistedTradeState error: {0}", ex.Message); }
+            try
+            {
+                string filePath = GetTradeStateFilePath();
+                if (File.Exists(filePath))
+                    File.Delete(filePath);
+            }
+            catch (Exception ex)
+            {
+                Print("  [!] DeletePersistedTradeState error: {0}", ex.Message);
+            }
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -1399,18 +1364,21 @@ namespace cAlgo.Robots
             bool loaded = false;
             if (isOnStartCall && MaxWeeklyDrawdownPercent > 0)
             {
-                string wKey = "10fold_weekequity_" + GetWeekMonday(Server.Time).ToString("yyyyMMdd");
+                string wKey = GetWeekMonday(Server.Time).ToString("yyyyMMdd");
+                string filePath = GetWeeklyStateFilePath(wKey);
+
                 try
                 {
-                    object obj = ObjectStore.GetValue(wKey);
-                    if (obj != null && double.TryParse(obj.ToString(),
-                        System.Globalization.NumberStyles.Float,
-                        System.Globalization.CultureInfo.InvariantCulture,
-                        out double stored))
+                    if (File.Exists(filePath))
                     {
-                        _weekStartEquity = stored;
-                        loaded = true;
-                        Print("  [✓] Loaded persisted weekly equity: {0:F2} {1}", _weekStartEquity, Account.Asset.Name);
+                        string json = File.ReadAllText(filePath);
+                        var state = JsonSerializer.Deserialize<WeeklyState>(json);
+                        if (state != null && state.WeekStart == wKey)
+                        {
+                            _weekStartEquity = state.WeekStartEquity;
+                            loaded = true;
+                            Print("  [✓] Loaded persisted weekly equity: {0:F2} {1}", _weekStartEquity, Account.Asset.Name);
+                        }
                     }
                 }
                 catch { }
@@ -1420,21 +1388,39 @@ namespace cAlgo.Robots
                 _weekStartEquity = Account.Equity;
 
             _weeklyDrawdownBreached = false;
-            _lastWeeklyResetDate    = Server.Time;
+            _lastWeeklyResetDate = Server.Time;
             PersistWeeklyState();
         }
 
         private void PersistWeeklyState()
         {
-            if (MaxWeeklyDrawdownPercent <= 0) return;
+            if (MaxWeeklyDrawdownPercent <= 0)
+                return;
+
             try
             {
-                string wKey = "10fold_weekequity_" + GetWeekMonday(Server.Time).ToString("yyyyMMdd");
-                ObjectStore.SetValue(wKey, _weekStartEquity.ToString("F4",
-                    System.Globalization.CultureInfo.InvariantCulture));
+                string wKey = GetWeekMonday(Server.Time).ToString("yyyyMMdd");
+                var state = new WeeklyState
+                {
+                    WeekStart = wKey,
+                    WeekStartEquity = _weekStartEquity
+                };
+
+                string filePath = GetWeeklyStateFilePath(wKey);
+                string directory = Path.GetDirectoryName(filePath);
+                if (!Directory.Exists(directory))
+                    Directory.CreateDirectory(directory);
+
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                string json = JsonSerializer.Serialize(state, options);
+                File.WriteAllText(filePath, json);
             }
-            catch (Exception ex) { Print("  [!] PersistWeeklyState error: {0}", ex.Message); }
+            catch (Exception ex)
+            {
+                Print("  [!] PersistWeeklyState error: {0}", ex.Message);
+            }
         }
+
 
         // ─────────────────────────────────────────────────────────────────────
         //  ResetDailyState
@@ -1612,13 +1598,14 @@ namespace cAlgo.Robots
             {
                 var   cp     = args.Position;
                 bool  isLong = cp.TradeType == TradeType.Buy;
-                double pnlPips = isLong
-                    ? (cp.ExitPrice - cp.EntryPrice) / Symbol.PipSize
-                    : (cp.EntryPrice - cp.ExitPrice) / Symbol.PipSize;
+                double pnlPips = cp.NetProfit / (Symbol.PipValue * cp.VolumeInUnits);
+                double exitPrice = isLong
+                    ? (cp.EntryPrice + pnlPips * Symbol.PipSize)
+                    : (cp.EntryPrice - pnlPips * Symbol.PipSize);
                 int[] s = _currentTrade.EntryModuleScores;
                 Print("[TRADECSV] {0},{1},{2:F5},{3:F5},{4:F2},{5:F2},{6},{7},{8},{9},{10},{11},{12},{13},{14},{15},{16:F2},{17:F4},{18},{19:F1}",
                     cp.EntryTime.ToString("O"), cp.TradeType,
-                    cp.EntryPrice, cp.ExitPrice, pnlPips, cp.NetProfit,
+                    cp.EntryPrice, exitPrice, pnlPips, cp.NetProfit,
                     s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8],
                     _currentTrade.EntryTotalScore,
                     _currentTrade.EntrySpreadPips,
@@ -3557,6 +3544,31 @@ namespace cAlgo.Robots
                 _currentTrade.Partial2Done,
                 _currentTrade.Partial3Done,
                 _currentTrade.ConsecutiveEmaCloses);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  State Persistence Helper Methods
+        // ─────────────────────────────────────────────────────────────────────
+        private string GetStateBaseDirectory()
+        {
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string botDir = Path.Combine(appData, "cTrader", "10FoldBot");
+            return botDir;
+        }
+
+        private string GetStateFilePath(string dateKey)
+        {
+            return Path.Combine(GetStateBaseDirectory(), $"DailyState_{dateKey}.json");
+        }
+
+        private string GetTradeStateFilePath()
+        {
+            return Path.Combine(GetStateBaseDirectory(), "TradeState.json");
+        }
+
+        private string GetWeeklyStateFilePath(string weekKey)
+        {
+            return Path.Combine(GetStateBaseDirectory(), $"WeeklyState_{weekKey}.json");
         }
 
     } // end class TenFoldBot
