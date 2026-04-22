@@ -2,7 +2,7 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  3.1.3 (module edge report)
+//  Version      │  3.1.4 (pivot strength 2 + adaptive fallback)
 // ═══════════════════════════════════════════════════════════════════════════════
 //  CHANGELOG
 //  ──────────────────────────────────────────────────────────────────────────────
@@ -24,6 +24,12 @@
 //             • DashboardCorner: string → DashboardCornerPosition enum.
 //             • RolloverCheckDoneToday persisted in DailyState across
 //               same-day restarts.
+//  v3.1.4   Pivot Strength 2 with Adaptive Fallback:
+//             • New parameter PivotLeftRightStrength (default=2, min=1, max=5).
+//             • GetRecentPivots(int) 1-arg overload now calls 2-arg overload with
+//               PivotLeftRightStrength; falls back to strength=1 when < 3 pivots
+//               are found (keeps Fibo/SR/FindSwingLevel from getting empty sets).
+//             • 2-arg overload unchanged (caching via cacheKey unmodified).
 //  v3.1.3   Module Edge Report:
 //             • New fields _attrScoreWinByBucket / _attrScoreLossByBucket
 //               (9 modules × 4 score buckets 0–3).
@@ -280,7 +286,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.3  │  Starting           ║");
+            Print("║   10-Fold Bot  v3.1.4  │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -329,7 +335,7 @@ namespace cAlgo.Robots
                 EnableSrModule         ? "on" : "off",
                 EnableMacdModule       ? "on" : "off",
                 EnableAdxScoreModule   ? "on" : "off");
-            Print("BUILD: v3.1.3 | Modules={0} | MaxScore={1} | MinReq={2}",
+            Print("BUILD: v3.1.4 | Modules={0} | MaxScore={1} | MinReq={2}",
                 modulesList, _maxPossibleScore, _minRequiredScore);
 
             Print("Dashboard: {0} | Corner: {1}", ShowDashboard ? "ON" : "OFF", DashboardCorner);
@@ -359,7 +365,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.3  │  Stopped            ║");
+            Print("║   10-Fold Bot  v3.1.4  │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -1146,7 +1152,7 @@ namespace cAlgo.Robots
             string line = "─────────────────────────────";
             string text =
                 "╔═══════════════════════════╗"  + nl +
-                "║  10-FOLD BOT  v3.1.3      ║"  + nl +
+                "║  10-FOLD BOT  v3.1.4      ║"  + nl +
                 "╚═══════════════════════════╝"  + nl +
                 string.Format("  Status   : {0}", botStatus)              + nl +
                 line                                                        + nl +

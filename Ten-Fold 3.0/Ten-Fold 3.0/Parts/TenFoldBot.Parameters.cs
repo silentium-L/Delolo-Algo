@@ -247,6 +247,11 @@ namespace cAlgo.Robots
             Group = "10 · Module: Oscillators", DefaultValue = 3, MinValue = 1, MaxValue = 3)]
         public int OscMaxWeight { get; set; }
 
+        // ── 09b · Pivot Detection ────────────────────────────────────────────
+        [Parameter("Pivot Left/Right Strength (bars required each side for a pivot, 1=standard)",
+            Group = "09b · Pivot Detection", DefaultValue = 2, MinValue = 1, MaxValue = 5)]
+        public int PivotLeftRightStrength { get; set; }
+
         // ── 11 · Module: S/R + VWAP ──────────────────────────────────────────
         [Parameter("Enable S/R + VWAP Module",
             Group = "11 · Module: S/R + VWAP", DefaultValue = true)]

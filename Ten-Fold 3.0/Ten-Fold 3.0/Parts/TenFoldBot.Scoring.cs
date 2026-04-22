@@ -736,7 +736,16 @@ namespace cAlgo.Robots
         //                     ein lokales Extremum sein (Standard = 1).
         // ─────────────────────────────────────────────────────────────────────
         // v2.12.0 – Pivot-Cache-Wrapper: reduziert redundante Berechnungen innerhalb einer Bar
-        private List<PivotPoint> GetRecentPivots(int lookbackBars, int leftRightStrength = 1)
+        // v3.1.4 – 1-arg overload uses PivotLeftRightStrength with adaptive fallback to 1.
+        private List<PivotPoint> GetRecentPivots(int lookbackBars)
+        {
+            var pivots = GetRecentPivots(lookbackBars, PivotLeftRightStrength);
+            if (pivots.Count < 3 && PivotLeftRightStrength > 1)
+                pivots = GetRecentPivots(lookbackBars, 1);
+            return pivots;
+        }
+
+        private List<PivotPoint> GetRecentPivots(int lookbackBars, int leftRightStrength)
         {
             DateTime barTime = Bars.OpenTimes.LastValue;
             if (barTime != _pivotCacheBarTime)
