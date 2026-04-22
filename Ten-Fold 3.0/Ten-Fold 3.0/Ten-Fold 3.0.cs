@@ -2,7 +2,7 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  3.1.2 (equity-based floating loss)
+//  Version      │  3.1.3 (module edge report)
 // ═══════════════════════════════════════════════════════════════════════════════
 //  CHANGELOG
 //  ──────────────────────────────────────────────────────────────────────────────
@@ -24,6 +24,14 @@
 //             • DashboardCorner: string → DashboardCornerPosition enum.
 //             • RolloverCheckDoneToday persisted in DailyState across
 //               same-day restarts.
+//  v3.1.3   Module Edge Report:
+//             • New fields _attrScoreWinByBucket / _attrScoreLossByBucket
+//               (9 modules × 4 score buckets 0–3).
+//             • OnPositionClosed: populates bucket arrays alongside existing
+//               attribution tracking (only when EntryModuleScores present).
+//             • OnStop: new "Module Edge per Score-Bucket" section printed after
+//               existing attribution stats when EnableTradeAttributionLog=true
+//               and bucket has n >= 5 trades.
 //  v3.1.2   Equity-based Floating Loss:
 //             • New enum FloatingLossDenom { Balance, Equity } in namespace.
 //             • New parameter FloatingLossDenominator (default=Balance, parity).
@@ -224,6 +232,10 @@ namespace cAlgo.Robots
         private int      _attrCountWin      = 0;
         private int      _attrCountLoss     = 0;
 
+        // v3.1.3 – Module Edge per Score-Bucket (9 modules × scores 0–3)
+        private double[,] _attrScoreWinByBucket  = new double[9, 4];
+        private double[,] _attrScoreLossByBucket = new double[9, 4];
+
         // VWAP Cache – einmal pro Bar in OnBar() berechnet
         private double   _cachedVwap      = 0;
         private int      _cachedLongScore  = 0;
@@ -268,7 +280,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.2  │  Starting           ║");
+            Print("║   10-Fold Bot  v3.1.3  │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -317,7 +329,7 @@ namespace cAlgo.Robots
                 EnableSrModule         ? "on" : "off",
                 EnableMacdModule       ? "on" : "off",
                 EnableAdxScoreModule   ? "on" : "off");
-            Print("BUILD: v3.1.2 | Modules={0} | MaxScore={1} | MinReq={2}",
+            Print("BUILD: v3.1.3 | Modules={0} | MaxScore={1} | MinReq={2}",
                 modulesList, _maxPossibleScore, _minRequiredScore);
 
             Print("Dashboard: {0} | Corner: {1}", ShowDashboard ? "ON" : "OFF", DashboardCorner);
@@ -347,7 +359,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.2  │  Stopped            ║");
+            Print("║   10-Fold Bot  v3.1.3  │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -374,6 +386,21 @@ namespace cAlgo.Robots
                     double al = _attrCountLoss > 0 ? _attrSumScoresLoss[i] / _attrCountLoss : 0;
                     Print("  {0,-6}   {1:F2}      {2:F2}       {3:+0.00;-0.00;0.00}",
                         names[i], aw, al, aw - al);
+                }
+
+                // v3.1.3 – Module Edge per Score-Bucket
+                Print("── Module Edge per Score-Bucket ──────────────────────");
+                for (int m = 0; m < 9; m++)
+                {
+                    for (int b = 0; b <= 3; b++)
+                    {
+                        double w  = _attrScoreWinByBucket[m, b];
+                        double l  = _attrScoreLossByBucket[m, b];
+                        double wr = (w + l) > 0 ? w / (w + l) : 0;
+                        if ((w + l) >= 5)
+                            Print("  {0,-6} score={1} n={2,3} winRate={3:P1}",
+                                names[m], b, (int)(w + l), wr);
+                    }
                 }
             }
         }
@@ -1033,6 +1060,13 @@ namespace cAlgo.Robots
                     _attrCountLoss++;
                     for (int i = 0; i < 9; i++) _attrSumScoresLoss[i] += s[i];
                 }
+
+                for (int i = 0; i < 9; i++)
+                {
+                    int bucket = Math.Min(3, s[i]);
+                    if (isWinner) _attrScoreWinByBucket[i, bucket]++;
+                    else          _attrScoreLossByBucket[i, bucket]++;
+                }
             }
 
             // State-Null-Konsistenz: closed trade → clear in-memory state so stale
@@ -1112,7 +1146,7 @@ namespace cAlgo.Robots
             string line = "─────────────────────────────";
             string text =
                 "╔═══════════════════════════╗"  + nl +
-                "║  10-FOLD BOT  v3.1.2      ║"  + nl +
+                "║  10-FOLD BOT  v3.1.3      ║"  + nl +
                 "╚═══════════════════════════╝"  + nl +
                 string.Format("  Status   : {0}", botStatus)              + nl +
                 line                                                        + nl +
