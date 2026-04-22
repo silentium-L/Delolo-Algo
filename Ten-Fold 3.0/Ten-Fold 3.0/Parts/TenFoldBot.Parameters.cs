@@ -556,6 +556,10 @@ namespace cAlgo.Robots
             Group = "20 · Account Protection", DefaultValue = FloatingLossGateMode.FloatingLossOnly)]
         public FloatingLossGateMode FloatingLossMode { get; set; }
 
+        [Parameter("Floating Loss Denominator (Balance = parity | Equity = tighter in drawdown)",
+            Group = "20 · Account Protection", DefaultValue = FloatingLossDenom.Balance)]
+        public FloatingLossDenom FloatingLossDenominator { get; set; }
+
         [Parameter("Max Trades per Day (0 = off)",
             Group = "20 · Account Protection", DefaultValue = 3, MinValue = 0)]
         public int MaxTradesPerDay { get; set; }

@@ -2,7 +2,7 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  3.1.1 (dynamic spread cap)
+//  Version      │  3.1.2 (equity-based floating loss)
 // ═══════════════════════════════════════════════════════════════════════════════
 //  CHANGELOG
 //  ──────────────────────────────────────────────────────────────────────────────
@@ -24,6 +24,12 @@
 //             • DashboardCorner: string → DashboardCornerPosition enum.
 //             • RolloverCheckDoneToday persisted in DailyState across
 //               same-day restarts.
+//  v3.1.2   Equity-based Floating Loss:
+//             • New enum FloatingLossDenom { Balance, Equity } in namespace.
+//             • New parameter FloatingLossDenominator (default=Balance, parity).
+//             • IsMarketTradable: denominator for floating-loss % now uses
+//               Account.Equity when FloatingLossDenominator=Equity.
+//             • Dashboard FloatLoss label shows "(of Balance|Equity)".
 //  v3.1.1   Dynamic Spread Cap:
 //             • New parameters EnableDynamicSpreadCap (default=false) and
 //               DynamicSpreadAtrRatio (default=0.3, parity with v3.1.0).
@@ -82,6 +88,9 @@ namespace cAlgo.Robots
     public enum FloatingLossGateMode { FloatingLossOnly, GrossUnrealised }
 
     public enum DashboardCornerPosition { TopLeft, TopRight, BottomLeft, BottomRight }
+
+    // v3.1.2 – Denominator for the floating-loss gate
+    public enum FloatingLossDenom { Balance, Equity }
 
     internal class TimeWindow
     {
@@ -259,7 +268,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.1  │  Starting           ║");
+            Print("║   10-Fold Bot  v3.1.2  │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -308,7 +317,7 @@ namespace cAlgo.Robots
                 EnableSrModule         ? "on" : "off",
                 EnableMacdModule       ? "on" : "off",
                 EnableAdxScoreModule   ? "on" : "off");
-            Print("BUILD: v3.1.1 | Modules={0} | MaxScore={1} | MinReq={2}",
+            Print("BUILD: v3.1.2 | Modules={0} | MaxScore={1} | MinReq={2}",
                 modulesList, _maxPossibleScore, _minRequiredScore);
 
             Print("Dashboard: {0} | Corner: {1}", ShowDashboard ? "ON" : "OFF", DashboardCorner);
@@ -338,7 +347,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.1  │  Stopped            ║");
+            Print("║   10-Fold Bot  v3.1.2  │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -1103,7 +1112,7 @@ namespace cAlgo.Robots
             string line = "─────────────────────────────";
             string text =
                 "╔═══════════════════════════╗"  + nl +
-                "║  10-FOLD BOT  v3.1.1      ║"  + nl +
+                "║  10-FOLD BOT  v3.1.2      ║"  + nl +
                 "╚═══════════════════════════╝"  + nl +
                 string.Format("  Status   : {0}", botStatus)              + nl +
                 line                                                        + nl +
@@ -1113,7 +1122,9 @@ namespace cAlgo.Robots
                 string.Format("  HTF Trend: {0}  [{1}]", htfStatus, HtfTimeFrame)                  + nl +
                 line                                                        + nl +
                 string.Format("  Score    : {0}", scoreStr)                + nl +
-                string.Format("  FloatLoss: {0:F2}%  (max {1:F1}%)", openRiskPct, MaxFloatingLossPercent) + nl +
+                string.Format("  FloatLoss: {0:F2}%  (max {1:F1}%, of {2})",
+                    openRiskPct, MaxFloatingLossPercent,
+                    FloatingLossDenominator == FloatingLossDenom.Equity ? "Equity" : "Balance") + nl +
                 string.Format("  Day DD   : {0:F2}%  (max {1:F1}%)", dayDdPct, MaxDailyDrawdownPercent)   + nl +
                 (string.IsNullOrEmpty(intervalStr) ? "" : intervalStr + nl) +
                 line                                                        + nl +
@@ -1402,8 +1413,9 @@ namespace cAlgo.Robots
                     totalUnrealised += contrib;
                 }
             }
-            double exposurePct = Account.Balance > 0
-                ? (totalUnrealised / Account.Balance) * 100.0 : 0;
+            double denom = FloatingLossDenominator == FloatingLossDenom.Equity
+                ? Account.Equity : Account.Balance;
+            double exposurePct = denom > 0 ? (totalUnrealised / denom) * 100.0 : 0;
             if (exposurePct >= MaxFloatingLossPercent)
             {
                 if (logRejections && ShouldLogRejection("FloatingLoss"))
