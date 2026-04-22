@@ -2,77 +2,13 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  3.1.4 (pivot strength 2 + adaptive fallback)
+//  Version      │  3.1.5 (MaxRiskPercent hard-cap against MaxDailyDrawdownPercent)
 // ═══════════════════════════════════════════════════════════════════════════════
 //  CHANGELOG
 //  ──────────────────────────────────────────────────────────────────────────────
-//  v2.13.0  Migrate state persistence from ObjectStore to JSON files
-//             (DailyState / WeeklyState / TradeState under %APPDATA%/cTrader).
-//  v2.13.1  Critical fixes:
-//             • Version strings synced across OnStart/OnStop/Dashboard.
-//             • Repaint-safe ATR lookup in RecoverExistingPosition (Last(1)).
-//             • OnPositionClosed clears _currentTrade after attribution log.
-//             • CleanupOldStateFiles() prunes >30-day state JSON on OnStart.
-//             • ValidateCriticalParameters() forces Standby on pathological
-//               configs (risk <=0, partial order inversion, MACD cycle).
-//             • CalculateRiskPercent floors anti-martingale at 50% MinRisk.
-//  v2.13.2  Semantic corrections:
-//             • FloatingLossGateMode.NetUnrealised → GrossUnrealised
-//               (breaking rename – label reflects actual semantics).
-//             • ScorePatterns: replace tautological i+1<=lb+1 with proper
-//               bounds-check against Bars.Count.
-//             • DashboardCorner: string → DashboardCornerPosition enum.
-//             • RolloverCheckDoneToday persisted in DailyState across
-//               same-day restarts.
-//  v3.1.4   Pivot Strength 2 with Adaptive Fallback:
-//             • New parameter PivotLeftRightStrength (default=2, min=1, max=5).
-//             • GetRecentPivots(int) 1-arg overload now calls 2-arg overload with
-//               PivotLeftRightStrength; falls back to strength=1 when < 3 pivots
-//               are found (keeps Fibo/SR/FindSwingLevel from getting empty sets).
-//             • 2-arg overload unchanged (caching via cacheKey unmodified).
-//  v3.1.3   Module Edge Report:
-//             • New fields _attrScoreWinByBucket / _attrScoreLossByBucket
-//               (9 modules × 4 score buckets 0–3).
-//             • OnPositionClosed: populates bucket arrays alongside existing
-//               attribution tracking (only when EntryModuleScores present).
-//             • OnStop: new "Module Edge per Score-Bucket" section printed after
-//               existing attribution stats when EnableTradeAttributionLog=true
-//               and bucket has n >= 5 trades.
-//  v3.1.2   Equity-based Floating Loss:
-//             • New enum FloatingLossDenom { Balance, Equity } in namespace.
-//             • New parameter FloatingLossDenominator (default=Balance, parity).
-//             • IsMarketTradable: denominator for floating-loss % now uses
-//               Account.Equity when FloatingLossDenominator=Equity.
-//             • Dashboard FloatLoss label shows "(of Balance|Equity)".
-//  v3.1.1   Dynamic Spread Cap:
-//             • New parameters EnableDynamicSpreadCap (default=false) and
-//               DynamicSpreadAtrRatio (default=0.3, parity with v3.1.0).
-//             • IsMarketTradable: after static MaxAllowedSpread check, an
-//               ATR-relative cap dynCap = min(MaxAllowedSpread, ATR×ratio)
-//               blocks entries when spread > dynCap.
-//             • Rejection reason "DynSpread" throttled via ShouldLogRejection.
-//  v3.1.0   Volatility Regime Gate:
-//             • New parameter EnableVolRegime (default=false, parity with v3.0.0).
-//             • CalculateVolRegime() in Scoring.cs: ATR_now / Median(20 daily ranges).
-//             • OnBar: adjustedMinReq raised by +5% consensus in low-vol (ratio < 0.7),
-//               lowered by -5% in high-vol (ratio > 1.4). Logs once per bar.
-//             • _dailyBars initialised when EnableVolRegime=true even if
-//               EnableVolatilityFilter=false.
-//  v3.0.0   Structural refactor – Partial Class Split:
-//             • Parameters extracted to Parts/TenFoldBot.Parameters.cs.
-//             • Scoring Engine (9 Score* modules + CalculateEntryScore +
-//               pivot/impulse helpers + VWAP + LogScoreBreakdown) extracted
-//               to Parts/TenFoldBot.Scoring.cs.
-//             • State persistence (JSON Load/Persist/Delete + path helpers
-//               + CleanupOldStateFiles) extracted to Parts/TenFoldBot.Persistence.cs.
-//             • All Score* methods now carry XML <summary> docs.
-//             • OnStart emits BUILD parity-marker log with module list and
-//               score thresholds for backtest identity checks.
-//             • NOTE: deviation from original 10-file plan – reduced to 4
-//               files (Parameters / Scoring / Persistence / main) to limit
-//               the risk of a single large refactor on a live trading bot.
-//               Further subdivisions can follow incrementally.
-// ═══════════════════════════════════════════════════════════════════════════════
+//  v3.1.5  P0-1: ValidateCriticalParameters clamps MaxRiskPercent to
+//          MaxDailyDrawdownPercent/2 when MaxRiskPercent*2 > MaxDailyDrawdownPercent.
+
 
 using System;
 using System.Collections.Generic;
@@ -286,7 +222,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.4  │  Starting           ║");
+            Print("║   10-Fold Bot  v3.1.5  │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -335,7 +271,7 @@ namespace cAlgo.Robots
                 EnableSrModule         ? "on" : "off",
                 EnableMacdModule       ? "on" : "off",
                 EnableAdxScoreModule   ? "on" : "off");
-            Print("BUILD: v3.1.4 | Modules={0} | MaxScore={1} | MinReq={2}",
+            Print("BUILD: v3.1.5 | Modules={0} | MaxScore={1} | MinReq={2}",
                 modulesList, _maxPossibleScore, _minRequiredScore);
 
             Print("Dashboard: {0} | Corner: {1}", ShowDashboard ? "ON" : "OFF", DashboardCorner);
@@ -365,7 +301,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.4  │  Stopped            ║");
+            Print("║   10-Fold Bot  v3.1.5  │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -423,6 +359,14 @@ namespace cAlgo.Robots
                 _botInStandby = true;
                 Print("CRITICAL: Min/MaxRiskPercent must both be > 0 (got Min={0:F4}, Max={1:F4}) – Bot entering Standby.",
                     MinRiskPercent, MaxRiskPercent);
+            }
+
+            if (MaxDailyDrawdownPercent > 0 && MaxRiskPercent * 2 > MaxDailyDrawdownPercent)
+            {
+                double clamped = MaxDailyDrawdownPercent / 2.0;
+                Print("WARNING: MaxRiskPercent ({0:F4}%) * 2 > MaxDailyDrawdownPercent ({1:F4}%) – clamping MaxRiskPercent to {2:F4}%.",
+                    MaxRiskPercent, MaxDailyDrawdownPercent, clamped);
+                MaxRiskPercent = clamped;
             }
 
             if (EnablePartial2 && Partial2TriggerR <= Partial1TriggerR)
@@ -1152,7 +1096,7 @@ namespace cAlgo.Robots
             string line = "─────────────────────────────";
             string text =
                 "╔═══════════════════════════╗"  + nl +
-                "║  10-FOLD BOT  v3.1.4      ║"  + nl +
+                "║  10-FOLD BOT  v3.1.5      ║"  + nl +
                 "╚═══════════════════════════╝"  + nl +
                 string.Format("  Status   : {0}", botStatus)              + nl +
                 line                                                        + nl +
