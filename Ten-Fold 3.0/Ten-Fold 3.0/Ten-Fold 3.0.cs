@@ -2,7 +2,7 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  2.13.1 (JSON-file persistence + robustness hardening)
+//  Version      │  2.13.2 (semantic corrections + robustness hardening)
 // ═══════════════════════════════════════════════════════════════════════════════
 //  CHANGELOG
 //  ──────────────────────────────────────────────────────────────────────────────
@@ -16,6 +16,14 @@
 //             • ValidateCriticalParameters() forces Standby on pathological
 //               configs (risk <=0, partial order inversion, MACD cycle).
 //             • CalculateRiskPercent floors anti-martingale at 50% MinRisk.
+//  v2.13.2  Semantic corrections:
+//             • FloatingLossGateMode.NetUnrealised → GrossUnrealised
+//               (breaking rename – label reflects actual semantics).
+//             • ScorePatterns: replace tautological i+1<=lb+1 with proper
+//               bounds-check against Bars.Count.
+//             • DashboardCorner: string → DashboardCornerPosition enum.
+//             • RolloverCheckDoneToday persisted in DailyState across
+//               same-day restarts.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 using System;
@@ -40,7 +48,12 @@ namespace cAlgo.Robots
     public enum RiskBase { Balance, Equity }
 
     // Floating Loss Gate Mode für IsMarketTradable
-    public enum FloatingLossGateMode { FloatingLossOnly, NetUnrealised }
+    // NOTE (v3.0.0 breaking rename): "NetUnrealised" was a misnomer – it sums
+    // Math.Abs(P&L) across all positions, i.e. a Gross exposure metric. Renamed
+    // accordingly. Users who relied on NetUnrealised must switch to GrossUnrealised.
+    public enum FloatingLossGateMode { FloatingLossOnly, GrossUnrealised }
+
+    public enum DashboardCornerPosition { TopLeft, TopRight, BottomLeft, BottomRight }
 
     internal class TimeWindow
     {
@@ -85,6 +98,7 @@ namespace cAlgo.Robots
         public int    TradesToday           { get; set; }
         public int    ConsecutiveLosses     { get; set; }
         public DateTime CooldownEndTime     { get; set; }
+        public bool   RolloverCheckDoneToday { get; set; }
     }
 
     internal class WeeklyState
@@ -645,7 +659,7 @@ namespace cAlgo.Robots
             Group = "20 · Account Protection", DefaultValue = 4.0, MinValue = 0.1, MaxValue = 100.0, Step = 0.1)]
         public double MaxFloatingLossPercent { get; set; }
 
-        [Parameter("Floating Loss Gate Mode",
+        [Parameter("Floating Loss Gate Mode (FloatingLossOnly | Gross Unrealised (abs sum of all P&L))",
             Group = "20 · Account Protection", DefaultValue = FloatingLossGateMode.FloatingLossOnly)]
         public FloatingLossGateMode FloatingLossMode { get; set; }
 
@@ -670,9 +684,9 @@ namespace cAlgo.Robots
             Group = "21 · Dashboard", DefaultValue = true)]
         public bool ShowDashboard { get; set; }
 
-        [Parameter("Dashboard Corner (TopLeft / TopRight / BottomLeft / BottomRight)",
-            Group = "21 · Dashboard", DefaultValue = "TopLeft")]
-        public string DashboardCorner { get; set; }
+        [Parameter("Dashboard Corner",
+            Group = "21 · Dashboard", DefaultValue = DashboardCornerPosition.TopLeft)]
+        public DashboardCornerPosition DashboardCorner { get; set; }
 
         // ════════════════════════════════════════════════════════════════════
         //  PRIVATE FIELDS – Indicators
@@ -776,7 +790,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v2.13.1 │  Starting           ║");
+            Print("║   10-Fold Bot  v2.13.2 │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -837,7 +851,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v2.13.1 │  Stopped            ║");
+            Print("║   10-Fold Bot  v2.13.2 │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -1294,6 +1308,7 @@ namespace cAlgo.Robots
                     _tradesToday = state.TradesToday;
                     _consecutiveLosses = state.ConsecutiveLosses;
                     _cooldownEndTime = state.CooldownEndTime;
+                    _rolloverCheckDoneToday = state.RolloverCheckDoneToday;
                     _persistedTodayLoaded = true;
 
                     Print("  [✓] Loaded persisted daily state: Equity={0:F2} {1}, Trades={2}, ConsecLoss={3}",
@@ -1321,7 +1336,8 @@ namespace cAlgo.Robots
                     DayStartEquity = _dayStartEquity,
                     TradesToday = _tradesToday,
                     ConsecutiveLosses = _consecutiveLosses,
-                    CooldownEndTime = _cooldownEndTime
+                    CooldownEndTime = _cooldownEndTime,
+                    RolloverCheckDoneToday = _rolloverCheckDoneToday
                 };
 
                 string filePath = GetStateFilePath(dateKey);
@@ -1490,7 +1506,9 @@ namespace cAlgo.Robots
                 _tradesToday = 0;
 
             _dailyDrawdownBreached  = false;
-            _rolloverCheckDoneToday = false;
+            // Preserve the persisted rollover flag across same-day restarts.
+            if (!(isOnStartCall && _persistedTodayLoaded))
+                _rolloverCheckDoneToday = false;
             _weekendCloseFired      = false;
             _lastDailyResetDate     = Server.Time;
 
@@ -1755,7 +1773,7 @@ namespace cAlgo.Robots
             string line = "─────────────────────────────";
             string text =
                 "╔═══════════════════════════╗"  + nl +
-                "║  10-FOLD BOT  v2.13.1     ║"  + nl +
+                "║  10-FOLD BOT  v2.13.2     ║"  + nl +
                 "╚═══════════════════════════╝"  + nl +
                 string.Format("  Status   : {0}", botStatus)              + nl +
                 line                                                        + nl +
@@ -1779,10 +1797,11 @@ namespace cAlgo.Robots
         {
             switch (DashboardCorner)
             {
-                case "TopRight":    return (VerticalAlignment.Top,    HorizontalAlignment.Right);
-                case "BottomLeft":  return (VerticalAlignment.Bottom, HorizontalAlignment.Left);
-                case "BottomRight": return (VerticalAlignment.Bottom, HorizontalAlignment.Right);
-                default:            return (VerticalAlignment.Top,    HorizontalAlignment.Left);
+                case DashboardCornerPosition.TopRight:    return (VerticalAlignment.Top,    HorizontalAlignment.Right);
+                case DashboardCornerPosition.BottomLeft:  return (VerticalAlignment.Bottom, HorizontalAlignment.Left);
+                case DashboardCornerPosition.BottomRight: return (VerticalAlignment.Bottom, HorizontalAlignment.Right);
+                case DashboardCornerPosition.TopLeft:
+                default:                                  return (VerticalAlignment.Top,    HorizontalAlignment.Left);
             }
         }
 
@@ -2012,7 +2031,9 @@ namespace cAlgo.Robots
                 }
             }
 
-            // FloatingLossMode supports two modes: FloatingLossOnly (default) or NetUnrealised (all positions)
+            // FloatingLossMode:
+            //   FloatingLossOnly  – only positions with NetProfit < 0 contribute
+            //   GrossUnrealised   – absolute P&L of every open position (v3.0.0 rename of NetUnrealised)
             double totalUnrealised = 0;
             foreach (var pos in Positions)
             {
@@ -2311,7 +2332,7 @@ namespace cAlgo.Robots
                     if (direction == TradeType.Sell && upperWick >= range * 0.60) hasPinBar = true;
                 }
 
-                if (!hasEngulfing && i + 1 <= lb + 1)
+                if (!hasEngulfing && i + 1 < Bars.Count)
                 {
                     double prevOpen  = Bars.OpenPrices.Last(i + 1);
                     double prevClose = Bars.ClosePrices.Last(i + 1);
@@ -2329,7 +2350,7 @@ namespace cAlgo.Robots
                         hasEngulfing = true;
                 }
 
-                if (!hasInsideBar && i + 1 <= lb + 1)
+                if (!hasInsideBar && i + 1 < Bars.Count)
                 {
                     double prevHigh = Bars.HighPrices.Last(i + 1);
                     double prevLow  = Bars.LowPrices.Last(i + 1);
