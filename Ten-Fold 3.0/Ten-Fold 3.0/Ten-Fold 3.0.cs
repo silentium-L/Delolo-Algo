@@ -2,7 +2,7 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  3.1.8 (Backtest-Mode Persistence Flag)
+//  Version      │  3.2.0 (Setup-Adaptive RRR)
 // ═══════════════════════════════════════════════════════════════════════════════
 //  CHANGELOG
 //  ──────────────────────────────────────────────────────────────────────────────
@@ -17,6 +17,8 @@
 //  v3.1.7  P2-1: EnableSessionAttribution – Session×DoW win-rate/avgPnL matrix in OnStop.
 //          GetSessionBucket (Asia/London/Overlap/NY) + GetDowBucket helpers.
 //  v3.1.8  P2-2: DisablePersistenceIO (default=false) skips all File I/O in Persistence.cs.
+//  v3.2.0  P2-3: EnableSetupAdaptiveRrr; ClassifySetup (Trend/MR/Mixed via module cache);
+//          RrrTargetTrend=2.5, RrrTargetMr=1.5, RrrTargetMixed=2.0; Setup= logged on entry.
 
 
 using System;
@@ -239,7 +241,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.8  │  Starting           ║");
+            Print("║   10-Fold Bot  v3.2.0  │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -289,7 +291,7 @@ namespace cAlgo.Robots
                 EnableSrModule         ? "on" : "off",
                 EnableMacdModule       ? "on" : "off",
                 EnableAdxScoreModule   ? "on" : "off");
-            Print("BUILD: v3.1.8 | Modules={0} | MaxScore={1} | MinReq={2}",
+            Print("BUILD: v3.2.0 | Modules={0} | MaxScore={1} | MinReq={2}",
                 modulesList, _maxPossibleScore, _minRequiredScore);
 
             if (DisablePersistenceIO)
@@ -323,7 +325,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.8  │  Stopped            ║");
+            Print("║   10-Fold Bot  v3.2.0  │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -1193,7 +1195,7 @@ namespace cAlgo.Robots
             string line = "─────────────────────────────";
             string text =
                 "╔═══════════════════════════╗"  + nl +
-                "║  10-FOLD BOT  v3.1.8      ║"  + nl +
+                "║  10-FOLD BOT  v3.2.0      ║"  + nl +
                 "╚═══════════════════════════╝"  + nl +
                 string.Format("  Status   : {0}", botStatus)              + nl +
                 line                                                        + nl +
@@ -1657,17 +1659,27 @@ namespace cAlgo.Robots
         // ════════════════════════════════════════════════════════════════════
         private double CalculateTpPips(TradeType direction, double slPips)
         {
+            double rrrToUse = RrrTarget;
+            if (EnableSetupAdaptiveRrr)
+            {
+                string cls = ClassifySetup(direction);
+                rrrToUse = cls == "Trend" ? RrrTargetTrend
+                         : cls == "MR"    ? RrrTargetMr
+                                          : RrrTargetMixed;
+                Print("SetupAdaptiveRRR: dir={0} class={1} rrr={2:F2}", direction, cls, rrrToUse);
+            }
+
             switch (TakeProfitMethod)
             {
                 case TpMethod.Rrr:
-                    return slPips * RrrTarget;
+                    return slPips * rrrToUse;
 
                 case TpMethod.AtrMultiplier:
                     double atr = _atrSl.Result.Last(1); // closed bar – no repaint
                     if (double.IsNaN(atr) || atr <= 0)
                     {
                         Print("CalculateTpPips: ATR invalid – falling back to RRR.");
-                        return slPips * RrrTarget;
+                        return slPips * rrrToUse;
                     }
                     return (atr / Symbol.PipSize) * AtrTpMultiplier;
 
@@ -1677,13 +1689,13 @@ namespace cAlgo.Robots
                     if (swingTgt < 0)
                     {
                         Print("CalculateTpPips: No opposing swing found – falling back to RRR.");
-                        return slPips * RrrTarget;
+                        return slPips * rrrToUse;
                     }
                     double entry   = direction == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
                     double tpSwing = direction == TradeType.Buy
                         ? (swingTgt - entry) / Symbol.PipSize
                         : (entry - swingTgt) / Symbol.PipSize;
-                    return tpSwing > slPips ? tpSwing : slPips * RrrTarget;
+                    return tpSwing > slPips ? tpSwing : slPips * rrrToUse;
 
                 case TpMethod.Runner:
                     return 0;
@@ -1693,7 +1705,7 @@ namespace cAlgo.Robots
                     return 0;
             }
 
-            return slPips * RrrTarget;
+            return slPips * rrrToUse;
         }
 
         #endregion // Risk & Position Sizing
@@ -1858,9 +1870,10 @@ namespace cAlgo.Robots
             double effRrr = (tpPips > 0 && slPips > 0)
                 ? (tpPips - entrySpreadP - commPips) / (slPips + entrySpreadP + commPips)
                 : 0;
-            Print("TryOpenTrade: FILLED ✓ | Id={0} | Entry={1:F5} | SL={2:F1}p | TP={3} | R:R={4:F2} (eff={5:F2}) | Vol={6:F0}u ({7:F2}L)",
+            string setupCls = EnableSetupAdaptiveRrr ? ClassifySetup(direction) : "N/A";
+            Print("TryOpenTrade: FILLED ✓ | Id={0} | Entry={1:F5} | SL={2:F1}p | TP={3} | R:R={4:F2} (eff={5:F2}) | Vol={6:F0}u ({7:F2}L) | Setup={8}",
                 _currentTrade.PositionId, _currentTrade.EntryPrice, _currentTrade.InitialSlPips,
-                tpLabel, rrr, effRrr, _currentTrade.InitialVolume, _currentTrade.InitialVolume / Symbol.LotSize);
+                tpLabel, rrr, effRrr, _currentTrade.InitialVolume, _currentTrade.InitialVolume / Symbol.LotSize, setupCls);
 
             // Modul-Score-Breakdown für bessere Backtest-Analyse
             if (EnableVerboseScoreLogging)
@@ -2346,6 +2359,19 @@ namespace cAlgo.Robots
             int dow = (int)t.DayOfWeek; // Sun=0, Mon=1, … Sat=6
             if (dow == 0 || dow == 6) return -1;
             return dow - 1; // Mon=0 … Fri=4
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  ClassifySetup – Trend / MR / Mixed based on cached module scores (v3.2.0)
+        // ─────────────────────────────────────────────────────────────────────
+        private string ClassifySetup(TradeType direction)
+        {
+            int[] cache = direction == TradeType.Buy ? _cachedLongModuleScores : _cachedShortModuleScores;
+            int trendPts = cache[0] + cache[2] + cache[7]; // EMA + ST + MACD
+            int mrPts    = cache[1] + cache[4] + cache[6]; // BB + FIB + SR
+            if (trendPts >= mrPts * 1.5 && trendPts >= 3) return "Trend";
+            if (mrPts >= trendPts * 1.5 && mrPts >= 3)    return "MR";
+            return "Mixed";
         }
 
         #endregion // Trade Management

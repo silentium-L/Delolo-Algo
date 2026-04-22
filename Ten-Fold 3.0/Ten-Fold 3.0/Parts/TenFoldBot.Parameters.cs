@@ -421,6 +421,22 @@ namespace cAlgo.Robots
             Group = "15 · Take Profit", DefaultValue = 30, MinValue = 5, MaxValue = 500)]
         public int SwingTpLookback { get; set; }
 
+        [Parameter("Enable Setup-Adaptive RRR",
+            Group = "15 · Take Profit", DefaultValue = false)]
+        public bool EnableSetupAdaptiveRrr { get; set; }
+
+        [Parameter("RRR Target – Trend Setup",
+            Group = "15 · Take Profit", DefaultValue = 2.5, MinValue = 0.5, Step = 0.25)]
+        public double RrrTargetTrend { get; set; }
+
+        [Parameter("RRR Target – MR Setup",
+            Group = "15 · Take Profit", DefaultValue = 1.5, MinValue = 0.5, Step = 0.25)]
+        public double RrrTargetMr { get; set; }
+
+        [Parameter("RRR Target – Mixed/Neutral Setup",
+            Group = "15 · Take Profit", DefaultValue = 2.0, MinValue = 0.5, Step = 0.25)]
+        public double RrrTargetMixed { get; set; }
+
         // ── 15b · Interval Lot Take Profit (v2.8.0) ──────────────────────────
         //  Schließt systematisch feste Lot-Mengen in gleichmäßigen Intervallen.
         //  Aktiv wenn TakeProfitMethod = IntervalLot gewählt ist.
