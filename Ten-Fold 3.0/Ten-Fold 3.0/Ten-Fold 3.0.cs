@@ -2,7 +2,7 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  3.0.0 (structural refactor – partial class split)
+//  Version      │  3.1.0 (volatility regime gate)
 // ═══════════════════════════════════════════════════════════════════════════════
 //  CHANGELOG
 //  ──────────────────────────────────────────────────────────────────────────────
@@ -24,6 +24,13 @@
 //             • DashboardCorner: string → DashboardCornerPosition enum.
 //             • RolloverCheckDoneToday persisted in DailyState across
 //               same-day restarts.
+//  v3.1.0   Volatility Regime Gate:
+//             • New parameter EnableVolRegime (default=false, parity with v3.0.0).
+//             • CalculateVolRegime() in Scoring.cs: ATR_now / Median(20 daily ranges).
+//             • OnBar: adjustedMinReq raised by +5% consensus in low-vol (ratio < 0.7),
+//               lowered by -5% in high-vol (ratio > 1.4). Logs once per bar.
+//             • _dailyBars initialised when EnableVolRegime=true even if
+//               EnableVolatilityFilter=false.
 //  v3.0.0   Structural refactor – Partial Class Split:
 //             • Parameters extracted to Parts/TenFoldBot.Parameters.cs.
 //             • Scoring Engine (9 Score* modules + CalculateEntryScore +
@@ -245,7 +252,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.0.0  │  Starting           ║");
+            Print("║   10-Fold Bot  v3.1.0  │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -256,7 +263,7 @@ namespace cAlgo.Robots
 
             Positions.Closed += OnPositionClosed;
 
-            if (EnableVolatilityFilter)
+            if (EnableVolatilityFilter || EnableVolRegime)
                 _dailyBars = MarketData.GetBars(TimeFrame.Daily);
 
             if (EnableNewsBlocker)
@@ -294,7 +301,7 @@ namespace cAlgo.Robots
                 EnableSrModule         ? "on" : "off",
                 EnableMacdModule       ? "on" : "off",
                 EnableAdxScoreModule   ? "on" : "off");
-            Print("BUILD: v3.0.0 | Modules={0} | MaxScore={1} | MinReq={2}",
+            Print("BUILD: v3.1.0 | Modules={0} | MaxScore={1} | MinReq={2}",
                 modulesList, _maxPossibleScore, _minRequiredScore);
 
             Print("Dashboard: {0} | Corner: {1}", ShowDashboard ? "ON" : "OFF", DashboardCorner);
@@ -324,7 +331,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.0.0  │  Stopped            ║");
+            Print("║   10-Fold Bot  v3.1.0  │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -1089,7 +1096,7 @@ namespace cAlgo.Robots
             string line = "─────────────────────────────";
             string text =
                 "╔═══════════════════════════╗"  + nl +
-                "║  10-FOLD BOT  v3.0.0      ║"  + nl +
+                "║  10-FOLD BOT  v3.1.0      ║"  + nl +
                 "╚═══════════════════════════╝"  + nl +
                 string.Format("  Status   : {0}", botStatus)              + nl +
                 line                                                        + nl +
@@ -1155,8 +1162,19 @@ namespace cAlgo.Robots
             _cachedLongScore  = longTradable  ? CalculateEntryScore(TradeType.Buy)  : 0;
             _cachedShortScore = shortTradable ? CalculateEntryScore(TradeType.Sell) : 0;
 
-            bool longQualifies  = _cachedLongScore  >= _minRequiredScore;
-            bool shortQualifies = _cachedShortScore >= _minRequiredScore;
+            int adjustedMinReq = _minRequiredScore;
+            if (EnableVolRegime)
+            {
+                double regime = CalculateVolRegime();
+                if (regime < 0.7)
+                    adjustedMinReq = (int)Math.Ceiling(_maxPossibleScore * (ConsensusRatio + 0.05));
+                else if (regime > 1.4)
+                    adjustedMinReq = (int)Math.Ceiling(_maxPossibleScore * (ConsensusRatio - 0.05));
+                Print("VolRegime: {0:F2} → MinReq={1}", regime, adjustedMinReq);
+            }
+
+            bool longQualifies  = _cachedLongScore  >= adjustedMinReq;
+            bool shortQualifies = _cachedShortScore >= adjustedMinReq;
 
             TradeType? selectedDir   = null;
             int        selectedScore = 0;

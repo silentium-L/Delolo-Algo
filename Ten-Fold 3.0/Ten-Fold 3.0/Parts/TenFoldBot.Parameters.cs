@@ -43,6 +43,10 @@ namespace cAlgo.Robots
             Group = "01b · Volatility & News", DefaultValue = false)]
         public bool EnableVolatilityFilter { get; set; }
 
+        [Parameter("Enable Volatility Regime Gate (adjusts MinReq by ATR vs 20d-median)",
+            Group = "01b · Volatility & News", DefaultValue = false)]
+        public bool EnableVolRegime { get; set; }
+
         [Parameter("ADR Period",
             Group = "01b · Volatility & News", DefaultValue = 14, MinValue = 1, MaxValue = 100)]
         public int AdrPeriod { get; set; }

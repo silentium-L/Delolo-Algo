@@ -698,6 +698,37 @@ namespace cAlgo.Robots
         #endregion // Scoring Engine
 
         // ─────────────────────────────────────────────────────────────────────
+        //  CalculateVolRegime (v3.1.0)
+        //  Returns ATR_now / Median(last 20 daily ATRs).
+        //  < 0.7 → low vol (raise bar), > 1.4 → high vol (lower bar).
+        // ─────────────────────────────────────────────────────────────────────
+        private double CalculateVolRegime()
+        {
+            if (_atrSl == null) return 1.0;
+
+            double atrNow = _atrSl.Result.Last(1) / Symbol.PipSize;
+            if (double.IsNaN(atrNow) || atrNow <= 0) return 1.0;
+
+            if (_dailyBars == null || _dailyBars.Count < 2) return 1.0;
+
+            int sampleCount = Math.Min(20, _dailyBars.Count - 1);
+            var dailyAtrs = new double[sampleCount];
+            for (int i = 0; i < sampleCount; i++)
+            {
+                double h = _dailyBars.HighPrices.Last(i + 1);
+                double l = _dailyBars.LowPrices.Last(i + 1);
+                dailyAtrs[i] = (h - l) / Symbol.PipSize;
+            }
+
+            Array.Sort(dailyAtrs);
+            double median = sampleCount % 2 == 0
+                ? (dailyAtrs[sampleCount / 2 - 1] + dailyAtrs[sampleCount / 2]) / 2.0
+                : dailyAtrs[sampleCount / 2];
+
+            return median > 0 ? atrNow / median : 1.0;
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
         //  GetRecentPivots – zentrale Pivot-Erkennung (ersetzt redundante Loops
         //  in ScoreFibonacci, ScoreSupportResistance und FindSwingLevel)
         //
