@@ -2,7 +2,20 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  2.12.0 (ObjectStore persistence + FloatingLossMode option)
+//  Version      │  2.13.1 (JSON-file persistence + robustness hardening)
+// ═══════════════════════════════════════════════════════════════════════════════
+//  CHANGELOG
+//  ──────────────────────────────────────────────────────────────────────────────
+//  v2.13.0  Migrate state persistence from ObjectStore to JSON files
+//             (DailyState / WeeklyState / TradeState under %APPDATA%/cTrader).
+//  v2.13.1  Critical fixes:
+//             • Version strings synced across OnStart/OnStop/Dashboard.
+//             • Repaint-safe ATR lookup in RecoverExistingPosition (Last(1)).
+//             • OnPositionClosed clears _currentTrade after attribution log.
+//             • CleanupOldStateFiles() prunes >30-day state JSON on OnStart.
+//             • ValidateCriticalParameters() forces Standby on pathological
+//               configs (risk <=0, partial order inversion, MACD cycle).
+//             • CalculateRiskPercent floors anti-martingale at 50% MinRisk.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 using System;
@@ -12,6 +25,8 @@ using System.IO;
 using cAlgo.API;
 using cAlgo.API.Indicators;
 using cAlgo.API.Internals;
+// cAlgo.API defines its own "File" type – alias System.IO.File to avoid ambiguity.
+using File = System.IO.File;
 
 namespace cAlgo.Robots
 {
@@ -761,12 +776,13 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v2.12.0 │  Starting           ║");
+            Print("║   10-Fold Bot  v2.13.1 │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
                 SymbolName, TimeFrame, Account.Balance, Account.Asset.Name);
 
+            ValidateCriticalParameters();
             ValidateParameters();
 
             Positions.Closed += OnPositionClosed;
@@ -785,6 +801,7 @@ namespace cAlgo.Robots
             }
 
             LoadPersistedState();
+            CleanupOldStateFiles();
             ResetDailyState(isOnStartCall: true);
             ResetWeeklyState(isOnStartCall: true);
 
@@ -820,7 +837,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v2.11.0 │  Stopped            ║");
+            Print("║   10-Fold Bot  v2.13.1 │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -852,6 +869,41 @@ namespace cAlgo.Robots
         }
 
         // ─────────────────────────────────────────────────────────────────────
+        //  ValidateCriticalParameters – hard-fail validation
+        //  Anything that would yield pathological behaviour forces Standby
+        //  instead of being downgraded to a WARNING.
+        // ─────────────────────────────────────────────────────────────────────
+        private void ValidateCriticalParameters()
+        {
+            if (!(MaxRiskPercent > 0) || !(MinRiskPercent > 0))
+            {
+                _botInStandby = true;
+                Print("CRITICAL: Min/MaxRiskPercent must both be > 0 (got Min={0:F4}, Max={1:F4}) – Bot entering Standby.",
+                    MinRiskPercent, MaxRiskPercent);
+            }
+
+            if (EnablePartial2 && Partial2TriggerR <= Partial1TriggerR)
+            {
+                _botInStandby = true;
+                Print("CRITICAL: Partial2TriggerR ({0:F2}R) <= Partial1TriggerR ({1:F2}R) – Bot entering Standby.",
+                    Partial2TriggerR, Partial1TriggerR);
+            }
+
+            if (EnablePartial3 && Partial3TriggerR <= Partial2TriggerR)
+            {
+                _botInStandby = true;
+                Print("CRITICAL: Partial3TriggerR ({0:F2}R) <= Partial2TriggerR ({1:F2}R) – Bot entering Standby.",
+                    Partial3TriggerR, Partial2TriggerR);
+            }
+
+            if (EnableMacdModule && MacdShortCycle >= MacdLongCycle)
+            {
+                _botInStandby = true;
+                Print("CRITICAL: MacdShortCycle ({0}) >= MacdLongCycle ({1}) – Bot entering Standby.",
+                    MacdShortCycle, MacdLongCycle);
+            }
+        }
+
         //  ValidateParameters
         // ─────────────────────────────────────────────────────────────────────
         private void ValidateParameters()
@@ -1120,7 +1172,7 @@ namespace cAlgo.Robots
                 && IntervalTpBasis == IntervalBasis.AtrMultiple
                 && _atrSl != null)
             {
-                atrAtEntry = _atrSl.Result.LastValue;
+                atrAtEntry = _atrSl.Result.Last(1); // closed bar – no repaint
                 if (double.IsNaN(atrAtEntry)) atrAtEntry = 0;
             }
 
@@ -1626,6 +1678,11 @@ namespace cAlgo.Robots
                 }
             }
 
+            // State-Null-Konsistenz: closed trade → clear in-memory state so stale
+            // references cannot leak into the next entry cycle.
+            if (_currentTrade != null && args.Position.Id == _currentTrade.PositionId)
+                _currentTrade = null;
+
             PersistDailyState();
         }
 
@@ -1698,7 +1755,7 @@ namespace cAlgo.Robots
             string line = "─────────────────────────────";
             string text =
                 "╔═══════════════════════════╗"  + nl +
-                "║  10-FOLD BOT  v2.11.0     ║"  + nl +
+                "║  10-FOLD BOT  v2.13.1     ║"  + nl +
                 "╚═══════════════════════════╝"  + nl +
                 string.Format("  Status   : {0}", botStatus)              + nl +
                 line                                                        + nl +
@@ -2748,7 +2805,11 @@ namespace cAlgo.Robots
 
             // P3: Anti-Martingale – reduce size after consecutive losses
             if (ConsecLossSizeReducer < 1.0 && _consecutiveLosses >= 1)
+            {
                 risk *= Math.Pow(ConsecLossSizeReducer, _consecutiveLosses);
+                // Floor at 50 % of MinRiskPercent to avoid effectively zero risk on long losing streaks.
+                risk = Math.Max(risk, MinRiskPercent * 0.5);
+            }
 
             return risk;
         }
@@ -3569,6 +3630,58 @@ namespace cAlgo.Robots
         private string GetWeeklyStateFilePath(string weekKey)
         {
             return Path.Combine(GetStateBaseDirectory(), $"WeeklyState_{weekKey}.json");
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  CleanupOldStateFiles – prevents unbounded growth of the state dir.
+        //  DailyState_*.json older than keepDays are removed.
+        //  WeeklyState_*.json older than keepDays*2 are removed.
+        // ─────────────────────────────────────────────────────────────────────
+        private void CleanupOldStateFiles(int keepDays = 30)
+        {
+            try
+            {
+                string dir = GetStateBaseDirectory();
+                if (!Directory.Exists(dir))
+                    return;
+
+                DateTime dailyCutoff  = DateTime.UtcNow.AddDays(-keepDays);
+                DateTime weeklyCutoff = DateTime.UtcNow.AddDays(-keepDays * 2);
+                int removed = 0;
+
+                foreach (string path in Directory.GetFiles(dir, "DailyState_*.json"))
+                {
+                    try
+                    {
+                        if (File.GetLastWriteTimeUtc(path) < dailyCutoff)
+                        {
+                            File.Delete(path);
+                            removed++;
+                        }
+                    }
+                    catch { }
+                }
+
+                foreach (string path in Directory.GetFiles(dir, "WeeklyState_*.json"))
+                {
+                    try
+                    {
+                        if (File.GetLastWriteTimeUtc(path) < weeklyCutoff)
+                        {
+                            File.Delete(path);
+                            removed++;
+                        }
+                    }
+                    catch { }
+                }
+
+                if (removed > 0)
+                    Print("  [✓] CleanupOldStateFiles: removed {0} stale file(s) from {1}", removed, dir);
+            }
+            catch (Exception ex)
+            {
+                Print("  [!] CleanupOldStateFiles error: {0}", ex.Message);
+            }
         }
 
     } // end class TenFoldBot
