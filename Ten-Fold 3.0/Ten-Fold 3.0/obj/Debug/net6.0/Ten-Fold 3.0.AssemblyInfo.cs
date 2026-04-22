@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Ten-Fold 3.0")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6383271371ccc30515f58d6264b36e251f50b504")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+57da449d0fad597c26a346b1e980fd85690f07e0")]
 [assembly: System.Reflection.AssemblyProductAttribute("Ten-Fold 3.0")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Ten-Fold 3.0")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

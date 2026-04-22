@@ -136,6 +136,69 @@
         "Description": ""
       },
       {
+        "DefaultValue": false,
+        "ParameterType": "Boolean",
+        "PropertyName": "EnableAdxFilter",
+        "FriendlyName": "Enable ADX Trend Strength Filter",
+        "GroupName": "01c · ADX Trend Strength",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 2,
+        "MaxValue": 200,
+        "Step": 1,
+        "DefaultValue": 14,
+        "ParameterType": "Integer",
+        "PropertyName": "AdxPeriod",
+        "FriendlyName": "ADX Period",
+        "GroupName": "01c · ADX Trend Strength",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 0.0,
+        "MaxValue": 100.0,
+        "Step": 1.0,
+        "DefaultValue": 20.0,
+        "ParameterType": "Double",
+        "PropertyName": "MinAdxValue",
+        "FriendlyName": "Min ADX for new Entries (0–100)",
+        "GroupName": "01c · ADX Trend Strength",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": true,
+        "ParameterType": "Boolean",
+        "PropertyName": "RequireDiAlignment",
+        "FriendlyName": "Require DI Alignment (DI+>DI- for Long etc.)",
+        "GroupName": "01c · ADX Trend Strength",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": false,
+        "ParameterType": "Boolean",
+        "PropertyName": "EnableAdxScoreModule",
+        "FriendlyName": "Enable ADX as Score Module (in addition to Gate)",
+        "GroupName": "01c · ADX Trend Strength",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 1,
+        "MaxValue": 3,
+        "Step": 1,
+        "DefaultValue": 2,
+        "ParameterType": "Integer",
+        "PropertyName": "AdxScoreMaxWeight",
+        "FriendlyName": "ADX Score Max Points (1–3)",
+        "GroupName": "01c · ADX Trend Strength",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
         "MinValue": 0.1,
         "MaxValue": 1.7976931348623157E+308,
         "Step": 0.1,
@@ -424,6 +487,15 @@
         "Description": ""
       },
       {
+        "DefaultValue": false,
+        "ParameterType": "Boolean",
+        "PropertyName": "FiboUseLegacyRange",
+        "FriendlyName": "Fibo Use Legacy Range (max/min over full lookback)",
+        "GroupName": "09 · Module: Fibonacci",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
         "DefaultValue": true,
         "ParameterType": "Boolean",
         "PropertyName": "EnableOscModule",
@@ -550,6 +622,63 @@
         "Description": ""
       },
       {
+        "DefaultValue": true,
+        "ParameterType": "Boolean",
+        "PropertyName": "EnableMacdModule",
+        "FriendlyName": "Enable MACD Module",
+        "GroupName": "11b · Module: MACD",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 2,
+        "MaxValue": 200,
+        "Step": 1,
+        "DefaultValue": 26,
+        "ParameterType": "Integer",
+        "PropertyName": "MacdLongCycle",
+        "FriendlyName": "MACD Long Cycle",
+        "GroupName": "11b · Module: MACD",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 2,
+        "MaxValue": 200,
+        "Step": 1,
+        "DefaultValue": 12,
+        "ParameterType": "Integer",
+        "PropertyName": "MacdShortCycle",
+        "FriendlyName": "MACD Short Cycle",
+        "GroupName": "11b · Module: MACD",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 1,
+        "MaxValue": 100,
+        "Step": 1,
+        "DefaultValue": 9,
+        "ParameterType": "Integer",
+        "PropertyName": "MacdSignalPeriods",
+        "FriendlyName": "MACD Signal Periods",
+        "GroupName": "11b · Module: MACD",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 1,
+        "MaxValue": 3,
+        "Step": 1,
+        "DefaultValue": 3,
+        "ParameterType": "Integer",
+        "PropertyName": "MacdMaxWeight",
+        "FriendlyName": "MACD Max Points (1–3)",
+        "GroupName": "11b · Module: MACD",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
         "MinValue": 0.3,
         "MaxValue": 1.0,
         "Step": 0.05,
@@ -567,6 +696,81 @@
         "PropertyName": "EnableVerboseScoreLogging",
         "FriendlyName": "Enable Verbose Score Logging",
         "GroupName": "12 · Scoring & Consensus",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": true,
+        "ParameterType": "Boolean",
+        "PropertyName": "BlockOnConflictingSignals",
+        "FriendlyName": "Block On Conflicting Signals (both Long+Short qualify)",
+        "GroupName": "12 · Scoring & Consensus",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": false,
+        "ParameterType": "Boolean",
+        "PropertyName": "EnableTradeAttributionLog",
+        "FriendlyName": "Enable Trade Attribution Log (print [TRADECSV] per closed trade)",
+        "GroupName": "12 · Scoring & Consensus",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": false,
+        "ParameterType": "Boolean",
+        "PropertyName": "EnableCategoryCaps",
+        "FriendlyName": "Enable Category Score Caps",
+        "GroupName": "12b · Category Caps",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 1,
+        "MaxValue": 9,
+        "Step": 1,
+        "DefaultValue": 3,
+        "ParameterType": "Integer",
+        "PropertyName": "TrendCategoryCap",
+        "FriendlyName": "Trend Cap – EMA+ST+MACD max",
+        "GroupName": "12b · Category Caps",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 1,
+        "MaxValue": 9,
+        "Step": 1,
+        "DefaultValue": 3,
+        "ParameterType": "Integer",
+        "PropertyName": "MeanReversionCategoryCap",
+        "FriendlyName": "MeanReversion Cap – BB+FIB+SR max",
+        "GroupName": "12b · Category Caps",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 1,
+        "MaxValue": 3,
+        "Step": 1,
+        "DefaultValue": 3,
+        "ParameterType": "Integer",
+        "PropertyName": "MomentumCategoryCap",
+        "FriendlyName": "Momentum Cap – OSC max",
+        "GroupName": "12b · Category Caps",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 1,
+        "MaxValue": 3,
+        "Step": 1,
+        "DefaultValue": 3,
+        "ParameterType": "Integer",
+        "PropertyName": "PriceActionCategoryCap",
+        "FriendlyName": "PriceAction Cap – Patterns max",
+        "GroupName": "12b · Category Caps",
         "IsValueVisibleInTitle": true,
         "Description": ""
       },
@@ -608,25 +812,25 @@
         "Description": ""
       },
       {
-        "MinValue": 0.01,
-        "MaxValue": 1.7976931348623157E+308,
-        "Step": 0.01,
-        "DefaultValue": 0.01,
+        "MinValue": 0.5,
+        "MaxValue": 1.0,
+        "Step": 0.05,
+        "DefaultValue": 1.0,
         "ParameterType": "Double",
-        "PropertyName": "MinLotSize",
-        "FriendlyName": "Min Lot Size (Hard Floor)",
+        "PropertyName": "ConsecLossSizeReducer",
+        "FriendlyName": "Consec Loss Size Reducer (1.0=off, 0.5-1.0 to shrink after losses)",
         "GroupName": "13 · Position Sizing & Risk",
         "IsValueVisibleInTitle": true,
         "Description": ""
       },
       {
-        "MinValue": 0.01,
+        "MinValue": 0.0,
         "MaxValue": 1.7976931348623157E+308,
-        "Step": 0.01,
-        "DefaultValue": 5.0,
+        "Step": 0.1,
+        "DefaultValue": 0.0,
         "ParameterType": "Double",
-        "PropertyName": "MaxLotSize",
-        "FriendlyName": "Max Lot Size (Hard Cap)",
+        "PropertyName": "EstimatedCommissionPips",
+        "FriendlyName": "Estimated Commission Pips (both sides, 0 = ignore)",
         "GroupName": "13 · Position Sizing & Risk",
         "IsValueVisibleInTitle": true,
         "Description": ""
@@ -1059,6 +1263,18 @@
         "Description": ""
       },
       {
+        "MinValue": 0.5,
+        "MaxValue": 3.0,
+        "Step": 0.05,
+        "DefaultValue": 1.0,
+        "ParameterType": "Double",
+        "PropertyName": "ReversalExitScoreMultiplier",
+        "FriendlyName": "Reversal Exit Score Multiplier (1.0=default, 1.1-1.2 = fewer false exits)",
+        "GroupName": "19 · Exit Logic",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
         "DefaultValue": true,
         "ParameterType": "Boolean",
         "PropertyName": "EnableWeekendClose",
@@ -1134,6 +1350,27 @@
         "Description": ""
       },
       {
+        "DefaultValue": false,
+        "ParameterType": "Boolean",
+        "PropertyName": "EnableMaxHoldTime",
+        "FriendlyName": "Enable Max Hold Time Exit",
+        "GroupName": "19 · Exit Logic",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 1,
+        "MaxValue": 720,
+        "Step": 1,
+        "DefaultValue": 48,
+        "ParameterType": "Integer",
+        "PropertyName": "MaxHoldTimeHours",
+        "FriendlyName": "Max Hold Time (Hours)",
+        "GroupName": "19 · Exit Logic",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
         "MinValue": 0.1,
         "MaxValue": 100.0,
         "Step": 0.1,
@@ -1158,6 +1395,19 @@
         "Description": ""
       },
       {
+        "EnumValues": {
+          "FloatingLossOnly": 0,
+          "GrossUnrealised": 1
+        },
+        "DefaultValue": 0,
+        "ParameterType": "Enum",
+        "PropertyName": "FloatingLossMode",
+        "FriendlyName": "Floating Loss Gate Mode (FloatingLossOnly | Gross Unrealised (abs sum of all P&L))",
+        "GroupName": "20 · Account Protection",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
         "MinValue": 0,
         "MaxValue": 2147483647,
         "Step": 1,
@@ -1165,6 +1415,18 @@
         "ParameterType": "Integer",
         "PropertyName": "MaxTradesPerDay",
         "FriendlyName": "Max Trades per Day (0 = off)",
+        "GroupName": "20 · Account Protection",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 0.0,
+        "MaxValue": 100.0,
+        "Step": 0.5,
+        "DefaultValue": 0.0,
+        "ParameterType": "Double",
+        "PropertyName": "MaxWeeklyDrawdownPercent",
+        "FriendlyName": "Max Weekly Drawdown % (0 = off, resets Monday)",
         "GroupName": "20 · Account Protection",
         "IsValueVisibleInTitle": true,
         "Description": ""
@@ -1203,10 +1465,16 @@
         "Description": ""
       },
       {
-        "DefaultValue": "TopLeft",
-        "ParameterType": "String",
+        "EnumValues": {
+          "TopLeft": 0,
+          "TopRight": 1,
+          "BottomLeft": 2,
+          "BottomRight": 3
+        },
+        "DefaultValue": 0,
+        "ParameterType": "Enum",
         "PropertyName": "DashboardCorner",
-        "FriendlyName": "Dashboard Corner (TopLeft / TopRight / BottomLeft / BottomRight)",
+        "FriendlyName": "Dashboard Corner",
         "GroupName": "21 · Dashboard",
         "IsValueVisibleInTitle": true,
         "Description": ""
