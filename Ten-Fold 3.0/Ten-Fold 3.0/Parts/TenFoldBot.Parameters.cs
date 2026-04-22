@@ -95,6 +95,14 @@ namespace cAlgo.Robots
             Group = "02 · Spread Protection", DefaultValue = 2.0, MinValue = 0.1, Step = 0.1)]
         public double MaxAllowedSpread { get; set; }
 
+        [Parameter("Enable Dynamic Spread Cap (ATR-relative)",
+            Group = "02 · Spread Protection", DefaultValue = false)]
+        public bool EnableDynamicSpreadCap { get; set; }
+
+        [Parameter("Dynamic Spread Cap – ATR Ratio (spread <= ratio × ATR)",
+            Group = "02 · Spread Protection", DefaultValue = 0.3, MinValue = 0.05, MaxValue = 1.0, Step = 0.05)]
+        public double DynamicSpreadAtrRatio { get; set; }
+
         // ── 03 · HTF Regime Filter ───────────────────────────────────────────
         [Parameter("Enable HTF Trend Filter",
             Group = "03 · HTF Regime Filter", DefaultValue = true)]

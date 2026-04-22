@@ -2,7 +2,7 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  3.1.0 (volatility regime gate)
+//  Version      │  3.1.1 (dynamic spread cap)
 // ═══════════════════════════════════════════════════════════════════════════════
 //  CHANGELOG
 //  ──────────────────────────────────────────────────────────────────────────────
@@ -24,6 +24,13 @@
 //             • DashboardCorner: string → DashboardCornerPosition enum.
 //             • RolloverCheckDoneToday persisted in DailyState across
 //               same-day restarts.
+//  v3.1.1   Dynamic Spread Cap:
+//             • New parameters EnableDynamicSpreadCap (default=false) and
+//               DynamicSpreadAtrRatio (default=0.3, parity with v3.1.0).
+//             • IsMarketTradable: after static MaxAllowedSpread check, an
+//               ATR-relative cap dynCap = min(MaxAllowedSpread, ATR×ratio)
+//               blocks entries when spread > dynCap.
+//             • Rejection reason "DynSpread" throttled via ShouldLogRejection.
 //  v3.1.0   Volatility Regime Gate:
 //             • New parameter EnableVolRegime (default=false, parity with v3.0.0).
 //             • CalculateVolRegime() in Scoring.cs: ATR_now / Median(20 daily ranges).
@@ -252,7 +259,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.0  │  Starting           ║");
+            Print("║   10-Fold Bot  v3.1.1  │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -301,7 +308,7 @@ namespace cAlgo.Robots
                 EnableSrModule         ? "on" : "off",
                 EnableMacdModule       ? "on" : "off",
                 EnableAdxScoreModule   ? "on" : "off");
-            Print("BUILD: v3.1.0 | Modules={0} | MaxScore={1} | MinReq={2}",
+            Print("BUILD: v3.1.1 | Modules={0} | MaxScore={1} | MinReq={2}",
                 modulesList, _maxPossibleScore, _minRequiredScore);
 
             Print("Dashboard: {0} | Corner: {1}", ShowDashboard ? "ON" : "OFF", DashboardCorner);
@@ -331,7 +338,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.0  │  Stopped            ║");
+            Print("║   10-Fold Bot  v3.1.1  │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -1096,7 +1103,7 @@ namespace cAlgo.Robots
             string line = "─────────────────────────────";
             string text =
                 "╔═══════════════════════════╗"  + nl +
-                "║  10-FOLD BOT  v3.1.0      ║"  + nl +
+                "║  10-FOLD BOT  v3.1.1      ║"  + nl +
                 "╚═══════════════════════════╝"  + nl +
                 string.Format("  Status   : {0}", botStatus)              + nl +
                 line                                                        + nl +
@@ -1344,6 +1351,22 @@ namespace cAlgo.Robots
                     Print("Trade rejected [{0}]: Spread {1:F2} > MaxAllowedSpread {2:F1} pips.",
                         direction, spreadPips, MaxAllowedSpread);
                 return false;
+            }
+
+            if (EnableDynamicSpreadCap && _atrSl != null)
+            {
+                double atrPips = _atrSl.Result.Last(1) / Symbol.PipSize;
+                if (!double.IsNaN(atrPips) && atrPips > 0)
+                {
+                    double dynCap = Math.Min(MaxAllowedSpread, atrPips * DynamicSpreadAtrRatio);
+                    if (spreadPips > dynCap)
+                    {
+                        if (logRejections && ShouldLogRejection("DynSpread"))
+                            Print("Trade rejected [{0}]: DynSpread {1:F2}p > dyn-cap {2:F2}p (ATR×{3:F2}).",
+                                direction, spreadPips, dynCap, DynamicSpreadAtrRatio);
+                        return false;
+                    }
+                }
             }
 
             if (EnableHtfFilter && _htfBars != null && _htfEma != null)
