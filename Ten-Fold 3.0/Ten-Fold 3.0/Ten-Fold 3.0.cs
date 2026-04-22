@@ -2,12 +2,18 @@
 //  10-Fold Bot  │  Multi-Strategy Scoring cBot
 //  Platform     │  cTrader (Pepperstone Razor Account)
 //  Architecture │  Modular Scoring Engine – Pullback / Mean Reversion
-//  Version      │  3.1.5 (MaxRiskPercent hard-cap against MaxDailyDrawdownPercent)
+//  Version      │  3.1.6 (Quant-Hardening P0-2…P1-4)
 // ═══════════════════════════════════════════════════════════════════════════════
 //  CHANGELOG
 //  ──────────────────────────────────────────────────────────────────────────────
 //  v3.1.5  P0-1: ValidateCriticalParameters clamps MaxRiskPercent to
 //          MaxDailyDrawdownPercent/2 when MaxRiskPercent*2 > MaxDailyDrawdownPercent.
+//  v3.1.6  P0-2: IncludeCommissionInRisk adds EstCommPips to slPips in CalculateSlPips.
+//          P0-3: ScoringPreset enum; DecorrelatedDefault preset forces Caps=true, all=3.
+//          P1-1: ReversalExitRequireHigherThanEntry raises threshold to EntryTotalScore.
+//          P1-2: EnableRProgressTimeStop exits when currentR < MinRProgress after N bars.
+//          P1-3: EnableVolTargetedSizing scales risk by Baseline/ATR (clamped 0.5–2.0).
+//          P1-4: AttributionLogFilePath appends CSV to file; header auto-written.
 
 
 using System;
@@ -41,6 +47,9 @@ namespace cAlgo.Robots
 
     // v3.1.2 – Denominator for the floating-loss gate
     public enum FloatingLossDenom { Balance, Equity }
+
+    // v3.1.6 – Scoring preset modes
+    public enum ScoringPreset { Custom, DecorrelatedDefault }
 
     internal class TimeWindow
     {
@@ -222,7 +231,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.5  │  Starting           ║");
+            Print("║   10-Fold Bot  v3.1.6  │  Starting           ║");
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
             Print("Symbol={0} | TF={1} | Balance={2:F2} {3}",
@@ -230,6 +239,7 @@ namespace cAlgo.Robots
 
             ValidateCriticalParameters();
             ValidateParameters();
+            ApplyScoringPreset();
 
             Positions.Closed += OnPositionClosed;
 
@@ -271,7 +281,7 @@ namespace cAlgo.Robots
                 EnableSrModule         ? "on" : "off",
                 EnableMacdModule       ? "on" : "off",
                 EnableAdxScoreModule   ? "on" : "off");
-            Print("BUILD: v3.1.5 | Modules={0} | MaxScore={1} | MinReq={2}",
+            Print("BUILD: v3.1.6 | Modules={0} | MaxScore={1} | MinReq={2}",
                 modulesList, _maxPossibleScore, _minRequiredScore);
 
             Print("Dashboard: {0} | Corner: {1}", ShowDashboard ? "ON" : "OFF", DashboardCorner);
@@ -301,7 +311,7 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   10-Fold Bot  v3.1.5  │  Stopped            ║");
+            Print("║   10-Fold Bot  v3.1.6  │  Stopped            ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime      : {0:dd\\d\\ hh\\h\\ mm\\m\\ ss\\s}",  runtime);
             Print("  Balance      : {0:F2} {1}", Account.Balance, Account.Asset.Name);
@@ -481,6 +491,22 @@ namespace cAlgo.Robots
             if (MaxWeeklyDrawdownPercent > 0 && MaxWeeklyDrawdownPercent < MaxDailyDrawdownPercent)
                 Print("WARNING: MaxWeeklyDrawdownPercent ({0:F1}%) < MaxDailyDrawdownPercent ({1:F1}%) – wöchentlicher Cap ist enger als täglicher.",
                     MaxWeeklyDrawdownPercent, MaxDailyDrawdownPercent);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  ApplyScoringPreset – overwrites cap params when preset != Custom
+        // ─────────────────────────────────────────────────────────────────────
+        private void ApplyScoringPreset()
+        {
+            if (ScoringPresetMode == ScoringPreset.DecorrelatedDefault)
+            {
+                EnableCategoryCaps        = true;
+                TrendCategoryCap          = 3;
+                MeanReversionCategoryCap  = 3;
+                MomentumCategoryCap       = 3;
+                PriceActionCategoryCap    = 3;
+                Print("Preset active: Decorrelated (Trend/MR/Mom/PA capped at 3 each)");
+            }
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -989,7 +1015,7 @@ namespace cAlgo.Robots
                     ? (cp.EntryPrice + pnlPips * Symbol.PipSize)
                     : (cp.EntryPrice - pnlPips * Symbol.PipSize);
                 int[] s = _currentTrade.EntryModuleScores;
-                Print("[TRADECSV] {0},{1},{2:F5},{3:F5},{4:F2},{5:F2},{6},{7},{8},{9},{10},{11},{12},{13},{14},{15},{16:F2},{17:F4},{18},{19:F1}",
+                string csvLine = string.Format("{0},{1},{2:F5},{3:F5},{4:F2},{5:F2},{6},{7},{8},{9},{10},{11},{12},{13},{14},{15},{16:F2},{17:F4},{18},{19:F1}",
                     cp.EntryTime.ToString("O"), cp.TradeType,
                     cp.EntryPrice, exitPrice, pnlPips, cp.NetProfit,
                     s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8],
@@ -998,6 +1024,22 @@ namespace cAlgo.Robots
                     _currentTrade.EntryAtrPips,
                     _currentTrade.EntryHtfRegime,
                     _currentTrade.EntryAdxValue);
+                Print("[TRADECSV] {0}", csvLine);
+
+                if (EnableTradeAttributionLog && !string.IsNullOrEmpty(AttributionLogFilePath))
+                {
+                    try
+                    {
+                        const string header = "EntryTime,Direction,EntryPrice,ExitPrice,PnlPips,NetProfit,EMA,BB,ST,PA,FIB,OSC,SR,MACD,ADX,TotalScore,SpreadPips,AtrPips,HtfRegime,AdxValue";
+                        if (!File.Exists(AttributionLogFilePath))
+                            File.WriteAllText(AttributionLogFilePath, header + Environment.NewLine);
+                        File.AppendAllText(AttributionLogFilePath, csvLine + Environment.NewLine);
+                    }
+                    catch (Exception ex)
+                    {
+                        Print("WARNING: Attribution file write failed ({0}): {1}", AttributionLogFilePath, ex.Message);
+                    }
+                }
 
                 bool isWinner = cp.NetProfit >= 0;
                 if (isWinner)
@@ -1096,7 +1138,7 @@ namespace cAlgo.Robots
             string line = "─────────────────────────────";
             string text =
                 "╔═══════════════════════════╗"  + nl +
-                "║  10-FOLD BOT  v3.1.5      ║"  + nl +
+                "║  10-FOLD BOT  v3.1.6      ║"  + nl +
                 "╚═══════════════════════════╝"  + nl +
                 string.Format("  Status   : {0}", botStatus)              + nl +
                 line                                                        + nl +
@@ -1475,6 +1517,17 @@ namespace cAlgo.Robots
                 risk = Math.Max(risk, MinRiskPercent * 0.5);
             }
 
+            if (EnableVolTargetedSizing && _atrSl != null && VolTargetAtrBaselinePips > 0)
+            {
+                double atrPips = _atrSl.Result.Last(1) / Symbol.PipSize;
+                if (atrPips > 0 && !double.IsNaN(atrPips))
+                {
+                    double scale = VolTargetAtrBaselinePips / atrPips;
+                    scale = Math.Max(0.5, Math.Min(2.0, scale));
+                    risk *= scale;
+                }
+            }
+
             return risk;
         }
 
@@ -1518,6 +1571,9 @@ namespace cAlgo.Robots
                     }
                     break;
             }
+
+            if (IncludeCommissionInRisk && EstimatedCommissionPips > 0)
+                slPips += EstimatedCommissionPips;
 
             if (slPips <= 0 || double.IsNaN(slPips))
             {
@@ -2110,6 +2166,33 @@ namespace cAlgo.Robots
                 }
             }
 
+            // ── d2) R-Progress Time Stop ──────────────────────────────────────
+            if (EnableRProgressTimeStop && _currentTrade != null && _currentTrade.EntryTime != DateTime.MinValue)
+            {
+                double barSeconds = Bars.Count >= 2
+                    ? (Bars.OpenTimes.Last(0) - Bars.OpenTimes.Last(1)).TotalSeconds
+                    : 60;
+                double elapsedBars = barSeconds > 0
+                    ? (Server.Time - _currentTrade.EntryTime).TotalSeconds / barSeconds
+                    : 0;
+                if (elapsedBars >= RProgressWindowBars)
+                {
+                    double slPipsNow  = _currentTrade.InitialSlPips;
+                    double currentR   = slPipsNow > 0
+                        ? (isLong
+                            ? (pos.CurrentPrice - _currentTrade.EntryPrice) / Symbol.PipSize / slPipsNow
+                            : (_currentTrade.EntryPrice - pos.CurrentPrice) / Symbol.PipSize / slPipsNow)
+                        : 0;
+                    if (currentR < MinRProgress)
+                    {
+                        Print("RProgressStall: {0:F1} bars elapsed, currentR={1:F2} < minR={2:F2}. Closing.",
+                            elapsedBars, currentR, MinRProgress);
+                        ForceCloseCurrentTrade("RProgressStall");
+                        return;
+                    }
+                }
+            }
+
             // ── e) Swap / Rollover Evasion ────────────────────────────────────
             if (EnableSwapEvasion && !_rolloverCheckDoneToday)
             {
@@ -2155,6 +2238,8 @@ namespace cAlgo.Robots
                 }
 
                 int reversalThreshold = (int)Math.Ceiling(_minRequiredScore * ReversalExitScoreMultiplier);
+                if (ReversalExitRequireHigherThanEntry && _currentTrade != null)
+                    reversalThreshold = Math.Max(reversalThreshold, _currentTrade.EntryTotalScore);
                 if (_cachedCounterScore >= reversalThreshold)
                 {
                     Print("Reversal exit [{0}]: Counter-direction score {1}/{2} >= {3} (threshold). Closing.",

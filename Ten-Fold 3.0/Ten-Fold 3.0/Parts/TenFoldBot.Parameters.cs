@@ -307,7 +307,15 @@ namespace cAlgo.Robots
             Group = "12 · Scoring & Consensus", DefaultValue = false)]
         public bool EnableTradeAttributionLog { get; set; }
 
+        [Parameter("Attribution Log File Path (empty = disable file output)",
+            Group = "12 · Scoring & Consensus", DefaultValue = "")]
+        public string AttributionLogFilePath { get; set; }
+
         // ── 12b · Category Caps (v2.12.0) ──────────────────────────────────────
+        [Parameter("Scoring Preset (DecorrelatedDefault overrides caps on start)",
+            Group = "12b · Category Caps", DefaultValue = ScoringPreset.Custom)]
+        public ScoringPreset ScoringPresetMode { get; set; }
+
         [Parameter("Enable Category Score Caps",
             Group = "12b · Category Caps", DefaultValue = false)]
         public bool EnableCategoryCaps { get; set; }
@@ -349,6 +357,18 @@ namespace cAlgo.Robots
         [Parameter("Estimated Commission Pips (both sides, 0 = ignore)",
             Group = "13 · Position Sizing & Risk", DefaultValue = 0.0, MinValue = 0.0, Step = 0.1)]
         public double EstimatedCommissionPips { get; set; }
+
+        [Parameter("Include Commission In Risk Calc (adds EstCommPips to SL for unit sizing)",
+            Group = "13 · Position Sizing & Risk", DefaultValue = false)]
+        public bool IncludeCommissionInRisk { get; set; }
+
+        [Parameter("Enable Vol Targeted Sizing",
+            Group = "13 · Position Sizing & Risk", DefaultValue = false)]
+        public bool EnableVolTargetedSizing { get; set; }
+
+        [Parameter("Vol Target ATR Baseline (Pips)",
+            Group = "13 · Position Sizing & Risk", DefaultValue = 20.0, MinValue = 1.0, Step = 0.5)]
+        public double VolTargetAtrBaselinePips { get; set; }
 
         // ── 14 · Stop Loss ───────────────────────────────────────────────────
         [Parameter("SL Calculation Method",
@@ -511,6 +531,10 @@ namespace cAlgo.Robots
             Group = "19 · Exit Logic", DefaultValue = 1.0, MinValue = 0.5, MaxValue = 3.0, Step = 0.05)]
         public double ReversalExitScoreMultiplier { get; set; }
 
+        [Parameter("Reversal Exit Require Higher Than Entry Score",
+            Group = "19 · Exit Logic", DefaultValue = false)]
+        public bool ReversalExitRequireHigherThanEntry { get; set; }
+
         [Parameter("Enable Weekend Protection (Friday close)",
             Group = "19 · Exit Logic", DefaultValue = true)]
         public bool EnableWeekendClose { get; set; }
@@ -546,6 +570,18 @@ namespace cAlgo.Robots
         [Parameter("Max Hold Time (Hours)",
             Group = "19 · Exit Logic", DefaultValue = 48, MinValue = 1, MaxValue = 720)]
         public int MaxHoldTimeHours { get; set; }
+
+        [Parameter("Enable R-Progress Time Stop",
+            Group = "19 · Exit Logic", DefaultValue = false)]
+        public bool EnableRProgressTimeStop { get; set; }
+
+        [Parameter("R-Progress Window (Bars)",
+            Group = "19 · Exit Logic", DefaultValue = 20, MinValue = 1, MaxValue = 500)]
+        public int RProgressWindowBars { get; set; }
+
+        [Parameter("Min R Progress",
+            Group = "19 · Exit Logic", DefaultValue = 0.3, MinValue = 0.0, MaxValue = 10.0, Step = 0.1)]
+        public double MinRProgress { get; set; }
 
         // ── 20 · Account Protection ──────────────────────────────────────────
         [Parameter("Max Daily Drawdown % (halts new entries)",
