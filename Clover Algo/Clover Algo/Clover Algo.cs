@@ -15,6 +15,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using cAlgo.API;
 using cAlgo.API.Indicators;
 using cAlgo.API.Internals;
@@ -26,6 +27,23 @@ namespace cAlgo.Robots
     public enum CloverSetup { Trend, MeanReversion, Breakout }
     public enum CloverRiskBase { Balance, Equity }
     public enum VolTargetMode { AtrBased, StdDevBased }
+
+    internal struct SessionKey : IEquatable<SessionKey>
+    {
+        public DayOfWeek DoW;
+        public int SessionBucket;  // 0=Asia(0-7), 1=London(7-13), 2=NY(13-20), 3=Off(20-24)
+
+        public override bool Equals(object obj) => obj is SessionKey other && Equals(other);
+        public bool Equals(SessionKey other) => DoW == other.DoW && SessionBucket == other.SessionBucket;
+        public override int GetHashCode() => (int)DoW * 10 + SessionBucket;
+    }
+
+    internal struct SessionStats
+    {
+        public int TradeCount;
+        public int Wins;
+        public double PnLSum;
+    }
 
     internal sealed class CloverTradeState
     {
@@ -358,6 +376,7 @@ namespace cAlgo.Robots
         private Dictionary<CloverEdge, double> _edgePnlSum = new Dictionary<CloverEdge, double>();
         private Dictionary<CloverEdge, double> _edgeEntrySlippageSum = new Dictionary<CloverEdge, double>();
         private Dictionary<CloverEdge, int> _edgeSlippageSampleCount = new Dictionary<CloverEdge, int>();
+        private Dictionary<SessionKey, SessionStats> _sessionStats = new Dictionary<SessionKey, SessionStats>();
 
         // ════════════════════════════════════════════════════════════════════
         //  ON START
@@ -441,6 +460,18 @@ namespace cAlgo.Robots
                     double avgEntrySlip = _edgeSlippageSampleCount[e] > 0 ? _edgeEntrySlippageSum[e] / _edgeSlippageSampleCount[e] : 0;
                     Print("  {0,-10} n={1,3} wr={2:P1} avgPnL={3:+0.00;-0.00;0.00} entry_slip={4:+0.0;-0.0;0.0}p",
                         e, n, wr, avg, avgEntrySlip);
+                }
+
+                Print("── Session/DoW Matrix ───────────────────────────");
+                var sortedSessions = _sessionStats.OrderBy(kvp => (kvp.Key.DoW, kvp.Key.SessionBucket)).ToList();
+                foreach (var entry in sortedSessions)
+                {
+                    SessionKey key = entry.Key;
+                    SessionStats stat = entry.Value;
+                    double wr = stat.TradeCount > 0 ? (double)stat.Wins / stat.TradeCount : 0;
+                    double avg = stat.TradeCount > 0 ? stat.PnLSum / stat.TradeCount : 0;
+                    Print("  {0,-10} {1,-10} n={2,2} wr={3:P0} avgPnL={4:+0.00;-0.00;0.00}",
+                        key.DoW, SessionBucketName(key.SessionBucket), stat.TradeCount, wr, avg);
                 }
             }
         }
@@ -1213,6 +1244,15 @@ namespace cAlgo.Robots
             _edgeEntrySlippageSum[edge] += _currentTrade.EntrySlippage;
             _edgeSlippageSampleCount[edge]++;
 
+            SessionKey skey = GetSessionKey(Server.Time);
+            if (!_sessionStats.ContainsKey(skey))
+                _sessionStats[skey] = new SessionStats { TradeCount = 0, Wins = 0, PnLSum = 0 };
+            SessionStats stat = _sessionStats[skey];
+            stat.TradeCount++;
+            if (pnl > 0) stat.Wins++;
+            stat.PnLSum += pnl;
+            _sessionStats[skey] = stat;
+
             Print("CLOSED: id={0} edge={1} setup={2} pnl={3:F2} slip_entry={4:+0.0;-0.0;0.0}p dayReal={5:F2} consecLoss={6}",
                 pos.Id, edge, _currentTrade.Setup, pnl, _currentTrade.EntrySlippage, _dayRealizedPnl, _consecutiveLosses);
             _currentTrade = null;
@@ -1326,6 +1366,25 @@ namespace cAlgo.Robots
         {
             int back = ((int)d.DayOfWeek - (int)DayOfWeek.Monday + 7) % 7;
             return d.Date.AddDays(-back);
+        }
+
+        private SessionKey GetSessionKey(DateTime time)
+        {
+            int hour = time.Hour;
+            int bucket = hour < 7 ? 0 : (hour < 13 ? 1 : (hour < 20 ? 2 : 3));
+            return new SessionKey { DoW = time.DayOfWeek, SessionBucket = bucket };
+        }
+
+        private string SessionBucketName(int bucket)
+        {
+            return bucket switch
+            {
+                0 => "Asia(0-7)",
+                1 => "London(7-13)",
+                2 => "NY(13-20)",
+                3 => "Off(20-24)",
+                _ => "Unknown"
+            };
         }
     }
 }
