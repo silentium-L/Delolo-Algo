@@ -25,6 +25,7 @@ namespace cAlgo.Robots
     public enum CloverRegime { LowVol, Normal, HighVol }
     public enum CloverSetup { Trend, MeanReversion, Breakout }
     public enum CloverRiskBase { Balance, Equity }
+    public enum VolTargetMode { AtrBased, StdDevBased }
 
     internal sealed class CloverTradeState
     {
@@ -277,9 +278,20 @@ namespace cAlgo.Robots
         [Parameter("Enable Vol-Targeted Sizing", Group = "12 · Sizing", DefaultValue = false)]
         public bool EnableVolTargetSizing { get; set; }
 
-        [Parameter("Baseline ATR Pips (reference)", Group = "12 · Sizing",
+        [Parameter("Vol Target Mode", Group = "12 · Sizing", DefaultValue = VolTargetMode.AtrBased)]
+        public VolTargetMode VolTargetMode { get; set; }
+
+        [Parameter("Baseline ATR Pips (reference, ATR-based mode)", Group = "12 · Sizing",
             DefaultValue = 12.0, MinValue = 1.0, Step = 0.5)]
         public double VolTargetBaselineAtrPips { get; set; }
+
+        [Parameter("Target Vol % (StdDev-based mode)", Group = "12 · Sizing",
+            DefaultValue = 1.5, MinValue = 0.1, MaxValue = 10.0, Step = 0.1)]
+        public double VolTargetStdDevPct { get; set; }
+
+        [Parameter("Vol Lookback Days (StdDev calculation)", Group = "12 · Sizing",
+            DefaultValue = 20, MinValue = 5, MaxValue = 60)]
+        public int VolLookbackDays { get; set; }
 
         [Parameter("Max Margin Utilization (%)", Group = "12 · Sizing",
             DefaultValue = 30.0, MinValue = 5.0, MaxValue = 95.0, Step = 5.0)]
@@ -889,17 +901,25 @@ namespace cAlgo.Robots
             if (_consecutiveLosses >= ConsecLossTrigger)
                 riskPct *= ConsecLossSizeReducer;
 
-            // Vol-targeted sizing: scale by Baseline/ATR (bounded 0.5-2.0).
+            // Vol-targeted sizing: scale by realized / target vol.
             if (EnableVolTargetSizing)
             {
-                double atrPips = GetAtrPips();
-                if (atrPips > 0)
+                double scale = 1.0;
+                if (VolTargetMode == VolTargetMode.AtrBased)
                 {
-                    double scale = VolTargetBaselineAtrPips / atrPips;
-                    if (scale < 0.5) scale = 0.5;
-                    if (scale > 2.0) scale = 2.0;
-                    riskPct *= scale;
+                    double atrPips = GetAtrPips();
+                    if (atrPips > 0)
+                        scale = VolTargetBaselineAtrPips / atrPips;
                 }
+                else if (VolTargetMode == VolTargetMode.StdDevBased)
+                {
+                    double realizedVol = CalculateRealizedVol();
+                    if (realizedVol > 0)
+                        scale = (VolTargetStdDevPct / 100.0) / realizedVol;
+                }
+                if (scale < 0.5) scale = 0.5;
+                if (scale > 2.0) scale = 2.0;
+                riskPct *= scale;
             }
 
             double riskAmount = baseAcct * (riskPct / 100.0);
@@ -922,6 +942,34 @@ namespace cAlgo.Robots
             }
 
             return normalized;
+        }
+
+        private double CalculateRealizedVol()
+        {
+            if (_dailyBars == null || _dailyBars.Count < VolLookbackDays + 1)
+                return 0;
+
+            double sumLogReturns = 0;
+            double sumLogReturns2 = 0;
+            int count = 0;
+
+            for (int i = 1; i <= VolLookbackDays && i < _dailyBars.Count; i++)
+            {
+                double c = _dailyBars.ClosePrices.Last(i);
+                double cPrev = _dailyBars.ClosePrices.Last(i + 1);
+                if (cPrev <= 0) continue;
+                double logReturn = Math.Log(c / cPrev);
+                sumLogReturns += logReturn;
+                sumLogReturns2 += logReturn * logReturn;
+                count++;
+            }
+            if (count <= 1) return 0;
+
+            double meanReturn = sumLogReturns / count;
+            double variance = (sumLogReturns2 / count) - (meanReturn * meanReturn);
+            if (variance < 0) variance = 0;
+            double stdDev = Math.Sqrt(variance);
+            return stdDev;
         }
 
         // ════════════════════════════════════════════════════════════════════
