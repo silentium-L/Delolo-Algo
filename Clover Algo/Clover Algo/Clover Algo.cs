@@ -457,6 +457,14 @@ namespace cAlgo.Robots
                 if (EnableOrb && TryOrbEntry(regime, htfBias)) return;
                 if (EnableMomoCont && TryMomoEntry(regime, htfBias)) return;
                 if (EnableVwapMR && TryVwapMrEntry(regime, htfBias)) return;
+
+                // Manage partials at bar-close level (gap protection).
+                if (_currentTrade != null)
+                {
+                    var pos = Positions.FindById(_currentTrade.PositionId);
+                    if (pos != null)
+                        ManagePartialsAtBarClose(pos);
+                }
             }
             catch (Exception ex)
             {
@@ -937,6 +945,26 @@ namespace cAlgo.Robots
             }
         }
 
+        private void ManagePartialsAtBarClose(Position pos)
+        {
+            double slPips = _currentTrade.InitialSlPips;
+            if (slPips <= 0) return;
+            double barMaxR = ComputeBarMaxR(pos, slPips);
+
+            if (EnablePartial1 && !_currentTrade.Partial1Done && barMaxR >= Partial1TriggerR)
+            {
+                ClosePartial(pos, Partial1Fraction, "Partial1@BarClose");
+                _currentTrade.Partial1Done = true;
+            }
+            if (EnablePartial2 && !_currentTrade.Partial2Done
+                && _currentTrade.Partial1Done
+                && barMaxR >= Partial2TriggerR)
+            {
+                ClosePartial(pos, Partial2Fraction, "Partial2@BarClose");
+                _currentTrade.Partial2Done = true;
+            }
+        }
+
         private void ClosePartial(Position pos, double fraction, string tag)
         {
             double volToClose = pos.VolumeInUnits * fraction;
@@ -1038,6 +1066,15 @@ namespace cAlgo.Robots
                 ? (Symbol.Bid - pos.EntryPrice) / Symbol.PipSize
                 : (pos.EntryPrice - Symbol.Ask) / Symbol.PipSize;
             return currentPipsInFavor / initialSlPips;
+        }
+
+        private double ComputeBarMaxR(Position pos, double initialSlPips)
+        {
+            if (initialSlPips <= 0) return 0;
+            double barMaxPips = pos.TradeType == TradeType.Buy
+                ? (Bars.HighPrices.Last(1) - pos.EntryPrice) / Symbol.PipSize
+                : (pos.EntryPrice - Bars.LowPrices.Last(1)) / Symbol.PipSize;
+            return barMaxPips / initialSlPips;
         }
 
         // ════════════════════════════════════════════════════════════════════
