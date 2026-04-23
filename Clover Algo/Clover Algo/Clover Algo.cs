@@ -117,6 +117,10 @@ namespace cAlgo.Robots
             DefaultValue = 1.30, MinValue = 0.5, MaxValue = 3.0, Step = 0.05)]
         public double AtrRatioHigh { get; set; }
 
+        [Parameter("Regime Hysteresis Band (avoid flicker)", Group = "04 · Volatility",
+            DefaultValue = 0.05, MinValue = 0.0, MaxValue = 0.5, Step = 0.01)]
+        public double RegimeHysteresisBand { get; set; }
+
         [Parameter("Median Lookback (days)", Group = "04 · Volatility",
             DefaultValue = 20, MinValue = 5, MaxValue = 60)]
         public int MedianLookbackDays { get; set; }
@@ -330,6 +334,7 @@ namespace cAlgo.Robots
         private int _tradesToday;
         private int _consecutiveLosses;
         private DateTime _cooldownEndTime = DateTime.MinValue;
+        private CloverRegime _lastRegime = CloverRegime.Normal;
 
         // ORB session state (reset per day)
         private DateTime _orbDate = DateTime.MinValue;
@@ -591,17 +596,17 @@ namespace cAlgo.Robots
             return false;
         }
 
-        // Regime: ATR(today) / Median(last N daily ATR proxies)
+        // Regime: ATR(today) / Median(last N daily ATR proxies) with hysteresis
         private CloverRegime ClassifyRegime()
         {
             if (_dailyBars == null || _dailyBars.Count < MedianLookbackDays + 2)
-                return CloverRegime.Normal;
+                return _lastRegime;
 
             double[] trs = new double[MedianLookbackDays];
             for (int i = 0; i < MedianLookbackDays; i++)
             {
                 int idx = i + 1;
-                if (idx + 1 >= _dailyBars.Count) return CloverRegime.Normal;
+                if (idx + 1 >= _dailyBars.Count) return _lastRegime;
                 double h = _dailyBars.HighPrices.Last(idx);
                 double l = _dailyBars.LowPrices.Last(idx);
                 double c1 = _dailyBars.ClosePrices.Last(idx + 1);
@@ -610,15 +615,29 @@ namespace cAlgo.Robots
             }
             Array.Sort(trs);
             double median = trs[MedianLookbackDays / 2];
-            if (median <= 0) return CloverRegime.Normal;
+            if (median <= 0) return _lastRegime;
 
             double currAtrPips = GetAtrPips();
             double currAtrPrice = currAtrPips * Symbol.PipSize;
             double ratio = currAtrPrice / median;
 
-            if (ratio <= AtrRatioLow) return CloverRegime.LowVol;
-            if (ratio >= AtrRatioHigh) return CloverRegime.HighVol;
-            return CloverRegime.Normal;
+            double lowBand = AtrRatioLow - RegimeHysteresisBand;
+            double highBand = AtrRatioHigh + RegimeHysteresisBand;
+
+            CloverRegime newRegime = _lastRegime;
+            if (ratio <= lowBand)
+                newRegime = CloverRegime.LowVol;
+            else if (ratio >= highBand)
+                newRegime = CloverRegime.HighVol;
+            else
+                newRegime = CloverRegime.Normal;
+
+            if (newRegime != _lastRegime)
+            {
+                _lastRegime = newRegime;
+                if (Verbose) Print("Regime change: {0} (ratio={1:F3})", newRegime, ratio);
+            }
+            return _lastRegime;
         }
 
         private int GetHtfBias()
