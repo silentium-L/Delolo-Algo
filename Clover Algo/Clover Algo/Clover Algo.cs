@@ -41,7 +41,6 @@ namespace cAlgo.Robots
         public CloverEdge Edge;
         public CloverSetup Setup;
         public double  EntrySlippage;       // pips: intended vs actual entry price
-        public double  ExitSlippage;        // pips: intended vs actual exit price
     }
 
     [Robot("Clover Algo", AccessRights = AccessRights.None)]
@@ -336,6 +335,8 @@ namespace cAlgo.Robots
         private Dictionary<CloverEdge, int> _edgeWinCount = new Dictionary<CloverEdge, int>();
         private Dictionary<CloverEdge, int> _edgeLossCount = new Dictionary<CloverEdge, int>();
         private Dictionary<CloverEdge, double> _edgePnlSum = new Dictionary<CloverEdge, double>();
+        private Dictionary<CloverEdge, double> _edgeEntrySlippageSum = new Dictionary<CloverEdge, double>();
+        private Dictionary<CloverEdge, int> _edgeSlippageSampleCount = new Dictionary<CloverEdge, int>();
 
         // ════════════════════════════════════════════════════════════════════
         //  ON START
@@ -370,6 +371,8 @@ namespace cAlgo.Robots
                 _edgeWinCount[e] = 0;
                 _edgeLossCount[e] = 0;
                 _edgePnlSum[e] = 0;
+                _edgeEntrySlippageSum[e] = 0;
+                _edgeSlippageSampleCount[e] = 0;
             }
 
             _dayStartBalance = Account.Balance;
@@ -414,7 +417,9 @@ namespace cAlgo.Robots
                     if (n == 0) continue;
                     double wr = (double)w / n;
                     double avg = _edgePnlSum[e] / n;
-                    Print("  {0,-10} n={1,3} wr={2:P1} avgPnL={3:+0.00;-0.00;0.00}", e, n, wr, avg);
+                    double avgEntrySlip = _edgeSlippageSampleCount[e] > 0 ? _edgeEntrySlippageSum[e] / _edgeSlippageSampleCount[e] : 0;
+                    Print("  {0,-10} n={1,3} wr={2:P1} avgPnL={3:+0.00;-0.00;0.00} entry_slip={4:+0.0;-0.0;0.0}p",
+                        e, n, wr, avg, avgEntrySlip);
                 }
             }
         }
@@ -842,6 +847,11 @@ namespace cAlgo.Robots
             }
 
             var pos = result.Position;
+            double intendedPrice = dir == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
+            double entrySlippagePips = dir == TradeType.Buy
+                ? (pos.EntryPrice - intendedPrice) / Symbol.PipSize
+                : (intendedPrice - pos.EntryPrice) / Symbol.PipSize;
+
             _currentTrade = new CloverTradeState
             {
                 PositionId = pos.Id,
@@ -855,13 +865,14 @@ namespace cAlgo.Robots
                 ChandelierStop = dir == TradeType.Buy ? double.MinValue : double.MaxValue,
                 EntryTime = Server.Time,
                 Edge = edge,
-                Setup = setup
+                Setup = setup,
+                EntrySlippage = entrySlippagePips
             };
             _totalTradesOpened++;
             _tradesToday++;
 
-            Print("FILLED: {0} {1} vol={2:F0} entry={3:F5} SL={4:F1}p TP={5:F1}p RRR={6:F2} edge={7} setup={8} | {9}",
-                dir, SymbolName, volume, pos.EntryPrice, slPips, tpPips, rrr, edge, setup, reason);
+            Print("FILLED: {0} {1} vol={2:F0} entry={3:F5} slip={4:+0.0;-0.0;0.0}p SL={5:F1}p TP={6:F1}p RRR={7:F2} edge={8} setup={9} | {10}",
+                dir, SymbolName, volume, pos.EntryPrice, entrySlippagePips, slPips, tpPips, rrr, edge, setup, reason);
             return true;
         }
 
@@ -1092,6 +1103,7 @@ namespace cAlgo.Robots
 
             double pnl = pos.NetProfit;
             CloverEdge edge = _currentTrade.Edge;
+
             _dayRealizedPnl += pnl;
             _weekRealizedPnl += pnl;
 
@@ -1112,9 +1124,11 @@ namespace cAlgo.Robots
                 }
             }
             _edgePnlSum[edge] += pnl;
+            _edgeEntrySlippageSum[edge] += _currentTrade.EntrySlippage;
+            _edgeSlippageSampleCount[edge]++;
 
-            Print("CLOSED: id={0} edge={1} setup={2} pnl={3:F2} dayRealPnL={4:F2} consecLoss={5}",
-                pos.Id, edge, _currentTrade.Setup, pnl, _dayRealizedPnl, _consecutiveLosses);
+            Print("CLOSED: id={0} edge={1} setup={2} pnl={3:F2} slip_entry={4:+0.0;-0.0;0.0}p dayReal={5:F2} consecLoss={6}",
+                pos.Id, edge, _currentTrade.Setup, pnl, _currentTrade.EntrySlippage, _dayRealizedPnl, _consecutiveLosses);
             _currentTrade = null;
         }
 
