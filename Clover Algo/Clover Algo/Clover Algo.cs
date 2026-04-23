@@ -66,6 +66,14 @@ namespace cAlgo.Robots
     public class CloverAlgo : Robot
     {
         // ════════════════════════════════════════════════════════════════════
+        //  CONSTANTS
+        // ════════════════════════════════════════════════════════════════════
+        private const double MOMO_PULLBACK_TOLERANCE_RATIO = 0.25;
+        private const double SPREAD_FLOOR_PIPS = 0.3;
+        private const double CHANDELIER_SL_CAP_PIPS = 2.0;
+        private const double MARGIN_SCALING_FACTOR = 0.8;
+
+        // ════════════════════════════════════════════════════════════════════
         //  PARAMETERS
         // ════════════════════════════════════════════════════════════════════
 
@@ -615,7 +623,7 @@ namespace cAlgo.Robots
             // Spread gate: hard cap + dynamic ATR-scaled cap
             double spreadPips = Symbol.Spread / Symbol.PipSize;
             double atrPips = GetAtrPips();
-            double dynCap = Math.Min(MaxSpreadPips, Math.Max(0.3, atrPips * SpreadAtrRatio));
+            double dynCap = Math.Min(MaxSpreadPips, Math.Max(SPREAD_FLOOR_PIPS, atrPips * SpreadAtrRatio));
             if (spreadPips > dynCap) return Reject($"SpreadGate {spreadPips:F2} > {dynCap:F2}");
 
             return true;
@@ -867,7 +875,7 @@ namespace cAlgo.Robots
                 bool trendOk = fastNow > slowNow && fastNow > fastPrev && closeNow > slowNow;
                 bool diOk = diPlus > diMinus;
                 bool pullbackOk = !MomoRequirePullback
-                    || (lowPrev <= fastNow + 0.25 * Math.Abs(fastNow - slowNow)
+                    || (lowPrev <= fastNow + MOMO_PULLBACK_TOLERANCE_RATIO * Math.Abs(fastNow - slowNow)
                         && closeNow > fastNow);
                 if (trendOk && diOk && pullbackOk)
                     return OpenTrade(TradeType.Buy, CloverEdge.MomoCont, CloverSetup.Trend, RrrTrend,
@@ -878,7 +886,7 @@ namespace cAlgo.Robots
                 bool trendOk = fastNow < slowNow && fastNow < fastPrev && closeNow < slowNow;
                 bool diOk = diMinus > diPlus;
                 bool pullbackOk = !MomoRequirePullback
-                    || (highPrev >= fastNow - 0.25 * Math.Abs(fastNow - slowNow)
+                    || (highPrev >= fastNow - MOMO_PULLBACK_TOLERANCE_RATIO * Math.Abs(fastNow - slowNow)
                         && closeNow < fastNow);
                 if (trendOk && diOk && pullbackOk)
                     return OpenTrade(TradeType.Sell, CloverEdge.MomoCont, CloverSetup.Trend, RrrTrend,
@@ -986,7 +994,7 @@ namespace cAlgo.Robots
                 double projectedLeverage = Account.Balance / Account.FreeMargin;
                 if (projectedLeverage > (1.0 / maxMarginUtilRatio))
                 {
-                    normalized = Symbol.NormalizeVolumeInUnits(normalized * 0.8, RoundingMode.Down);
+                    normalized = Symbol.NormalizeVolumeInUnits(normalized * MARGIN_SCALING_FACTOR, RoundingMode.Down);
                     if (normalized < Symbol.VolumeInUnitsMin) return Symbol.VolumeInUnitsMin;
                 }
             }
@@ -1125,7 +1133,7 @@ namespace cAlgo.Robots
                     // never loosen beyond current SL
                     if (pos.StopLoss.HasValue && desiredSl <= pos.StopLoss.Value) return;
                     // cap: don't pull SL beyond current price
-                    if (desiredSl >= Symbol.Bid - 2 * Symbol.PipSize) return;
+                    if (desiredSl >= Symbol.Bid - CHANDELIER_SL_CAP_PIPS * Symbol.PipSize) return;
                     ModifyPosition(pos, desiredSl, pos.TakeProfit);
                 }
             }
@@ -1140,7 +1148,7 @@ namespace cAlgo.Robots
                 if (!pos.StopLoss.HasValue || desiredSl < pos.StopLoss.Value)
                 {
                     if (pos.StopLoss.HasValue && desiredSl >= pos.StopLoss.Value) return;
-                    if (desiredSl <= Symbol.Ask + 2 * Symbol.PipSize) return;
+                    if (desiredSl <= Symbol.Ask + CHANDELIER_SL_CAP_PIPS * Symbol.PipSize) return;
                     ModifyPosition(pos, desiredSl, pos.TakeProfit);
                 }
             }
