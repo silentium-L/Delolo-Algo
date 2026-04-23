@@ -62,6 +62,9 @@ namespace cAlgo.Robots
         public CloverEdge Edge;
         public CloverSetup Setup;
         public double  EntrySlippage;       // pips: intended vs actual entry price
+        public double  ChandelierPeakHigh;  // cached peak high since entry (long)
+        public double  ChandelierPeakLow;   // cached peak low since entry (short)
+        public DateTime LastChandelierUpdateTime;  // last bar processed for peak update
     }
 
     [Robot("Clover Algo", AccessRights = AccessRights.None)]
@@ -969,7 +972,10 @@ namespace cAlgo.Robots
                 EntryTime = Server.Time,
                 Edge = edge,
                 Setup = setup,
-                EntrySlippage = entrySlippagePips
+                EntrySlippage = entrySlippagePips,
+                ChandelierPeakHigh = dir == TradeType.Buy ? pos.EntryPrice : double.MinValue,
+                ChandelierPeakLow = dir == TradeType.Sell ? pos.EntryPrice : double.MaxValue,
+                LastChandelierUpdateTime = Server.Time
             };
             _totalTradesOpened++;
             _tradesToday++;
@@ -1149,10 +1155,21 @@ namespace cAlgo.Robots
             double atr = _atrChandelier.Result.Last(1);
             if (double.IsNaN(atr) || atr <= 0) return;
 
+            DateTime lastBarTime = Bars.OpenTimes.Last(1);
+            if (lastBarTime != _currentTrade.LastChandelierUpdateTime)
+            {
+                _currentTrade.LastChandelierUpdateTime = lastBarTime;
+                if (pos.TradeType == TradeType.Buy)
+                    if (Bars.HighPrices.Last(1) > _currentTrade.ChandelierPeakHigh)
+                        _currentTrade.ChandelierPeakHigh = Bars.HighPrices.Last(1);
+                else
+                    if (Bars.LowPrices.Last(1) < _currentTrade.ChandelierPeakLow)
+                        _currentTrade.ChandelierPeakLow = Bars.LowPrices.Last(1);
+            }
+
             if (pos.TradeType == TradeType.Buy)
             {
-                double highSinceEntry = GetHighSince(_currentTrade.EntryTime);
-                double candidate = highSinceEntry - ChandelierAtrMult * atr;
+                double candidate = _currentTrade.ChandelierPeakHigh - ChandelierAtrMult * atr;
                 if (candidate > _currentTrade.ChandelierStop)
                     _currentTrade.ChandelierStop = candidate;
 
@@ -1168,8 +1185,7 @@ namespace cAlgo.Robots
             }
             else
             {
-                double lowSinceEntry = GetLowSince(_currentTrade.EntryTime);
-                double candidate = lowSinceEntry + ChandelierAtrMult * atr;
+                double candidate = _currentTrade.ChandelierPeakLow + ChandelierAtrMult * atr;
                 if (candidate < _currentTrade.ChandelierStop)
                     _currentTrade.ChandelierStop = candidate;
 
