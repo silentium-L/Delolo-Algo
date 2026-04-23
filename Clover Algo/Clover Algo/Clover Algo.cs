@@ -281,6 +281,10 @@ namespace cAlgo.Robots
             DefaultValue = 12.0, MinValue = 1.0, Step = 0.5)]
         public double VolTargetBaselineAtrPips { get; set; }
 
+        [Parameter("Max Margin Utilization (%)", Group = "12 · Sizing",
+            DefaultValue = 30.0, MinValue = 5.0, MaxValue = 95.0, Step = 5.0)]
+        public double MaxMarginUtilizationPct { get; set; }
+
         // ── 13 · Logging ─────────────────────────────────────────────────────
         [Parameter("Verbose Logs", Group = "13 · Logging", DefaultValue = true)]
         public bool Verbose { get; set; }
@@ -902,7 +906,22 @@ namespace cAlgo.Robots
             double pipValue = Symbol.PipValue;
             if (pipValue <= 0 || slPips <= 0) return Symbol.VolumeInUnitsMin;
             double exact = riskAmount / (slPips * pipValue);
-            return Symbol.NormalizeVolumeInUnits(exact, RoundingMode.Down);
+            double normalized = Symbol.NormalizeVolumeInUnits(exact, RoundingMode.Down);
+
+            // Margin cap: ensure leverage ratio stays within limit.
+            double maxMarginUtilRatio = MaxMarginUtilizationPct / 100.0;
+            if (Account.Equity > 0 && Account.FreeMargin > 0)
+            {
+                double projectedMarginNeeded = Account.Margin + (Symbol.PipValue * normalized);
+                double projectedLeverage = Account.Balance / Account.FreeMargin;
+                if (projectedLeverage > (1.0 / maxMarginUtilRatio))
+                {
+                    normalized = Symbol.NormalizeVolumeInUnits(normalized * 0.8, RoundingMode.Down);
+                    if (normalized < Symbol.VolumeInUnitsMin) return Symbol.VolumeInUnitsMin;
+                }
+            }
+
+            return normalized;
         }
 
         // ════════════════════════════════════════════════════════════════════
