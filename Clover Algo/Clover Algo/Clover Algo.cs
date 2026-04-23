@@ -390,6 +390,7 @@ namespace cAlgo.Robots
         private Dictionary<CloverEdge, double> _edgeEntrySlippageSum = new Dictionary<CloverEdge, double>();
         private Dictionary<CloverEdge, int> _edgeSlippageSampleCount = new Dictionary<CloverEdge, int>();
         private Dictionary<SessionKey, SessionStats> _sessionStats = new Dictionary<SessionKey, SessionStats>();
+        private List<double> _rMultiples = new List<double>();
 
         // ════════════════════════════════════════════════════════════════════
         //  ON START
@@ -485,6 +486,27 @@ namespace cAlgo.Robots
                     double avg = stat.TradeCount > 0 ? stat.PnLSum / stat.TradeCount : 0;
                     Print("  {0,-10} {1,-10} n={2,2} wr={3:P0} avgPnL={4:+0.00;-0.00;0.00}",
                         key.DoW, SessionBucketName(key.SessionBucket), stat.TradeCount, wr, avg);
+                }
+
+                if (_rMultiples.Count > 0)
+                {
+                    Print("── R-Multiple Distribution ──────────────────────");
+                    var sortedR = _rMultiples.OrderBy(x => x).ToList();
+                    double meanR = sortedR.Average();
+                    double medianR = sortedR.Count % 2 == 0
+                        ? (sortedR[sortedR.Count / 2 - 1] + sortedR[sortedR.Count / 2]) / 2.0
+                        : sortedR[sortedR.Count / 2];
+                    double p10 = sortedR[(int)(sortedR.Count * 0.10)];
+                    double p90 = sortedR[(int)(sortedR.Count * 0.90)];
+                    double sumDev = sortedR.Sum(r => Math.Pow(r - meanR, 3));
+                    double stdDev = Math.Sqrt(sortedR.Sum(r => Math.Pow(r - meanR, 2)) / sortedR.Count);
+                    double skewness = stdDev > 0 ? sumDev / (sortedR.Count * stdDev * stdDev * stdDev) : 0;
+                    double expectancy = meanR;
+
+                    Print("  n={0,3} mean={1:+0.00;-0.00;0.00} median={2:+0.00;-0.00;0.00} p10={3:+0.00;-0.00;0.00} p90={4:+0.00;-0.00;0.00}",
+                        sortedR.Count, meanR, medianR, p10, p90);
+                    Print("  stddev={0:F2} skew={1:+0.00;-0.00;0.00} expectancy={2:+0.00;-0.00;0.00}R",
+                        stdDev, skewness, expectancy);
                 }
 
                 PersistAttributionJson();
@@ -1235,6 +1257,8 @@ namespace cAlgo.Robots
 
             double pnl = pos.NetProfit;
             CloverEdge edge = _currentTrade.Edge;
+            double rMultiple = _currentTrade.InitialSlPips > 0 ? pnl / (Symbol.PipValue * _currentTrade.InitialSlPips * pos.VolumeInUnits) : 0;
+            _rMultiples.Add(rMultiple);
 
             _dayRealizedPnl += pnl;
             _weekRealizedPnl += pnl;
