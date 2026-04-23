@@ -16,6 +16,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
+using System.Text;
 using cAlgo.API;
 using cAlgo.API.Indicators;
 using cAlgo.API.Internals;
@@ -334,6 +336,9 @@ namespace cAlgo.Robots
         [Parameter("Enable Attribution Summary on Stop", Group = "13 · Logging", DefaultValue = true)]
         public bool EnableAttribution { get; set; }
 
+        [Parameter("Enable Attribution Persistence (JSON, Live only)", Group = "13 · Logging", DefaultValue = false)]
+        public bool EnableAttributionPersistence { get; set; }
+
         // ════════════════════════════════════════════════════════════════════
         //  PRIVATE STATE
         // ════════════════════════════════════════════════════════════════════
@@ -481,6 +486,8 @@ namespace cAlgo.Robots
                     Print("  {0,-10} {1,-10} n={2,2} wr={3:P0} avgPnL={4:+0.00;-0.00;0.00}",
                         key.DoW, SessionBucketName(key.SessionBucket), stat.TradeCount, wr, avg);
                 }
+
+                PersistAttributionJson();
             }
         }
 
@@ -1393,6 +1400,79 @@ namespace cAlgo.Robots
                 3 => "Off(20-24)",
                 _ => "Unknown"
             };
+        }
+
+        private void PersistAttributionJson()
+        {
+            if (!EnableAttributionPersistence) return;
+            if (!IsLiveTradingMode())
+            {
+                if (Verbose) Print("Attribution persistence disabled: not running in Live mode");
+                return;
+            }
+
+            try
+            {
+                var sb = new StringBuilder();
+                sb.AppendLine("{");
+                sb.AppendLine($"  \"bot\": \"{BotLabel}\",");
+                sb.AppendLine($"  \"symbol\": \"{SymbolName}\",");
+                sb.AppendLine($"  \"runtime\": \"{Server.Time - _startTime:dd\\\\d\\\\ hh\\\\h\\\\ mm\\\\m}\",");
+                sb.AppendLine($"  \"trades_opened\": {_totalTradesOpened},");
+                sb.AppendLine("  \"edge_attribution\": {");
+
+                var edges = Enum.GetValues(typeof(CloverEdge)).Cast<CloverEdge>().ToList();
+                for (int i = 0; i < edges.Count; i++)
+                {
+                    CloverEdge e = edges[i];
+                    int w = _edgeWinCount[e];
+                    int l = _edgeLossCount[e];
+                    int n = w + l;
+                    if (n == 0) continue;
+                    double wr = (double)w / n;
+                    double avg = _edgePnlSum[e] / n;
+                    double avgSlip = _edgeSlippageSampleCount[e] > 0 ? _edgeEntrySlippageSum[e] / _edgeSlippageSampleCount[e] : 0;
+
+                    sb.Append($"    \"{e}\": {{\"n\": {n}, \"wins\": {w}, \"loss\": {l}, \"wr\": {wr:F4}, \"avg_pnl\": {avg:F2}, \"entry_slip_pips\": {avgSlip:F2}}}");
+                    if (i < edges.Count - 1) sb.AppendLine(",");
+                    else sb.AppendLine();
+                }
+
+                sb.AppendLine("  },");
+                sb.AppendLine("  \"session_stats\": {");
+
+                var sortedSessions = _sessionStats.OrderBy(kvp => (kvp.Key.DoW, kvp.Key.SessionBucket)).ToList();
+                for (int i = 0; i < sortedSessions.Count; i++)
+                {
+                    var entry = sortedSessions[i];
+                    SessionKey key = entry.Key;
+                    SessionStats stat = entry.Value;
+                    double wr = stat.TradeCount > 0 ? (double)stat.Wins / stat.TradeCount : 0;
+                    double avg = stat.TradeCount > 0 ? stat.PnLSum / stat.TradeCount : 0;
+
+                    sb.Append($"    \"{key.DoW}_{SessionBucketName(key.SessionBucket)}\": {{\"n\": {stat.TradeCount}, \"wins\": {stat.Wins}, \"wr\": {wr:F4}, \"avg_pnl\": {avg:F2}}}");
+                    if (i < sortedSessions.Count - 1) sb.AppendLine(",");
+                    else sb.AppendLine();
+                }
+
+                sb.AppendLine("  }");
+                sb.AppendLine("}");
+
+                string filename = $"{BotLabel}.attribution.json";
+                string filepath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "cAlgo", "Robots", filename);
+                System.IO.File.WriteAllText(filepath, sb.ToString(), Encoding.UTF8);
+                Print($"Attribution saved: {filepath}");
+            }
+            catch (Exception ex)
+            {
+                Print($"ERROR persisting attribution: {ex.Message}");
+            }
+        }
+
+        private bool IsLiveTradingMode()
+        {
+            try { return Account.IsLive; }
+            catch { return false; }
         }
     }
 }
