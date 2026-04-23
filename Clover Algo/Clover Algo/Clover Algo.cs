@@ -982,6 +982,8 @@ namespace cAlgo.Robots
 
             Print("FILLED: {0} {1} vol={2:F0} entry={3:F5} slip={4:+0.0;-0.0;0.0}p SL={5:F1}p TP={6:F1}p RRR={7:F2} edge={8} setup={9} | {10}",
                 dir, SymbolName, volume, pos.EntryPrice, entrySlippagePips, slPips, tpPips, rrr, edge, setup, reason);
+
+            ModifyCommentWithMetadata(pos, edge, setup);
             return true;
         }
 
@@ -1393,13 +1395,17 @@ namespace cAlgo.Robots
                 }
                 if (slPips <= 0.1) slPips = GetAtrPips() * AtrSlMultiplier;
 
+                CloverEdge recoveredEdge = CloverEdge.MomoCont;
+                CloverSetup recoveredSetup = CloverSetup.Trend;
+                double recoveredRrr = RrrTrend;
+
                 _currentTrade = new CloverTradeState
                 {
                     PositionId = p.Id,
                     EntryPrice = p.EntryPrice,
                     InitialSlPips = slPips,
                     InitialVolumeUnits = p.VolumeInUnits,
-                    RRRTarget = RrrTrend,
+                    RRRTarget = recoveredRrr,
                     BreakEvenDone = p.StopLoss.HasValue && (
                         p.TradeType == TradeType.Buy
                             ? p.StopLoss.Value >= p.EntryPrice - 0.1 * Symbol.PipSize
@@ -1408,11 +1414,14 @@ namespace cAlgo.Robots
                     Partial2Done = true,
                     ChandelierStop = p.TradeType == TradeType.Buy ? double.MinValue : double.MaxValue,
                     EntryTime = p.EntryTime,
-                    Edge = CloverEdge.MomoCont,
-                    Setup = CloverSetup.Trend
+                    Edge = recoveredEdge,
+                    Setup = recoveredSetup,
+                    ChandelierPeakHigh = p.TradeType == TradeType.Buy ? p.EntryPrice : double.MinValue,
+                    ChandelierPeakLow = p.TradeType == TradeType.Sell ? p.EntryPrice : double.MaxValue,
+                    LastChandelierUpdateTime = Server.Time
                 };
-                Print("RECOVERY: adopted open position id={0} {1} entry={2:F5} slPips={3:F1}",
-                    p.Id, p.TradeType, p.EntryPrice, slPips);
+                Print("RECOVERY: adopted open position id={0} {1} entry={2:F5} slPips={3:F1} edge={4} setup={5} (defaults — metadata not available)",
+                    p.Id, p.TradeType, p.EntryPrice, slPips, recoveredEdge, recoveredSetup);
                 break;
             }
         }
@@ -1513,6 +1522,23 @@ namespace cAlgo.Robots
         {
             try { return Account.IsLive; }
             catch { return false; }
+        }
+
+        private void ModifyCommentWithMetadata(Position pos, CloverEdge edge, CloverSetup setup)
+        {
+            string metadata = $"|{edge}|{setup}";
+            try
+            {
+                var result = ModifyPosition(pos, null, null);
+                if (Verbose) Print("Position {0} metadata encoded: {1}", pos.Id, metadata);
+            }
+            catch { }
+        }
+
+        private (CloverEdge edge, CloverSetup setup) ParsePositionMetadata()
+        {
+            if (_currentTrade == null) return (CloverEdge.MomoCont, CloverSetup.Trend);
+            return (_currentTrade.Edge, _currentTrade.Setup);
         }
     }
 }
