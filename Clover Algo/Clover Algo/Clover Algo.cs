@@ -421,7 +421,8 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   Clover Algo  v1.0.0   │  Starting          ║");
+            Print("║   Clover Algo v1.0.13 - Starting              ║");
+            Print("║   ParameterSetId: {0,-25} ║", ParameterSetId);
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
 
@@ -483,11 +484,13 @@ namespace cAlgo.Robots
             Positions.Closed -= OnPositionClosed;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   Clover Algo v1.0.0  │  Stopped             ║");
+            Print("║   Clover Algo v1.0.13 (ParameterSetId: {0})    ║", ParameterSetId);
+            Print("║   Stopped                                      ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime    : {0:dd\\d\\ hh\\h\\ mm\\m}", runtime);
             Print("  Balance    : {0:F2} {1}", Account.Balance, Account.Asset.Name);
             Print("  Trades     : {0}", _totalTradesOpened);
+            Print("  ParameterSetId: {0}", ParameterSetId);
 
             if (EnableAttribution)
             {
