@@ -18,6 +18,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.IO;
 using System.Text;
+using System.Reflection;
 using cAlgo.API;
 using cAlgo.API.Indicators;
 using cAlgo.API.Internals;
@@ -77,6 +78,19 @@ namespace cAlgo.Robots
         private const double SPREAD_FLOOR_PIPS = 0.3;
         private const double CHANDELIER_SL_CAP_PIPS = 2.0;
         private const double MARGIN_SCALING_FACTOR = 0.8;
+
+        private static readonly Dictionary<string, object> CANONICAL_DEFAULTS = new Dictionary<string, object>
+        {
+            { "RiskPerTradePct", 0.5 },
+            { "MaxDailyDdPct", 3.0 },
+            { "MaxWeeklyDdPct", 6.0 },
+            { "AtrPeriod", 14 },
+            { "AtrSlMultiplier", 1.8 },
+            { "SessionStartHour", 7 },
+            { "SessionEndHour", 20 },
+            { "MaxMarginUtilizationPct", 30.0 },
+            { "RegimeHysteresisBand", 0.05 }
+        };
 
         // ════════════════════════════════════════════════════════════════════
         //  PARAMETERS
@@ -342,6 +356,12 @@ namespace cAlgo.Robots
         [Parameter("Enable Attribution Persistence (JSON, Live only)", Group = "13 · Logging", DefaultValue = false)]
         public bool EnableAttributionPersistence { get; set; }
 
+        [Parameter("Lock Parameters (prevent live changes)", Group = "13 · Logging", DefaultValue = false)]
+        public bool LockParameters { get; set; }
+
+        [Parameter("Parameter Set ID (WF compatibility)", Group = "13 · Logging", DefaultValue = "v1.0.12")]
+        public string ParameterSetId { get; set; }
+
         // ════════════════════════════════════════════════════════════════════
         //  PRIVATE STATE
         // ════════════════════════════════════════════════════════════════════
@@ -450,6 +470,12 @@ namespace cAlgo.Robots
                 EnableMomoCont ? "on" : "off",
                 MaxDailyDdPct, MaxWeeklyDdPct, MaxTradesPerDay);
             Print("DD mode: realized PnL (closed trades only, no floating equity bleed)");
+            Print("ParameterSetId: {0} | LockParameters: {1}", ParameterSetId, LockParameters);
+
+            if (LockParameters)
+            {
+                ValidateParameterLock();
+            }
         }
 
         protected override void OnStop()
@@ -631,6 +657,34 @@ namespace cAlgo.Robots
                 ok = false;
             }
             return ok;
+        }
+
+        private void ValidateParameterLock()
+        {
+            Print("──── Parameter Lock Active ────");
+            int divergences = 0;
+            foreach (var canonical in CANONICAL_DEFAULTS)
+            {
+                string paramName = canonical.Key;
+                object canonicalValue = canonical.Value;
+                object currentValue = GetPropertyValue(paramName);
+
+                if (currentValue != null && !currentValue.Equals(canonicalValue))
+                {
+                    Print("DIVERGENCE: {0} = {1} (canonical: {2})", paramName, currentValue, canonicalValue);
+                    divergences++;
+                }
+            }
+            if (divergences == 0)
+                Print("All critical parameters match canonical defaults.");
+            else
+                Print("WARNING: {0} parameter(s) diverged from canonical set. Manual tuning detected.", divergences);
+        }
+
+        private object GetPropertyValue(string propertyName)
+        {
+            var prop = this.GetType().GetProperty(propertyName);
+            return prop?.GetValue(this);
         }
 
         // ════════════════════════════════════════════════════════════════════
