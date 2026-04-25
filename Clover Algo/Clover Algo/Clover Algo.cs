@@ -1,23 +1,18 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Clover Algo  │  Multi-Edge Intraday cBot
 //  Platform     │  cTrader
-//  Version      │  1.0.15
+//  Version      │  1.1.2
 //  Edges        │  (1) Opening Range Breakout + Volatility Compression (NR7/Squeeze)
 //                  (2) VWAP Mean-Reversion in Low-ADX (range) regimes
 //                  (3) Momentum Continuation aligned with HTF regime
-//                  Regime Switch: ATR/Median(20d) picks which edge is "armed".
-//  Design notes │  - Closed-bar signals only (Last(1)) — no repaint.
-//                  - Single-position model per symbol (one at a time).
-//                  - Hard risk gates: Daily/Weekly DD, Spread×ATR, Consec-Loss sizing.
-//                  - Partials + Chandelier trail + BE lock, Setup-Adaptive RRR.
-//                  - All new/experimental modules default OFF for parity testing.
-// ═══════════════════════════════════════════════════════════════════════════════
+//                  Regime Switch: Daily ATR/Median(20d) picks which edge is "armed".
 
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
 using System.Text;
+using System.Globalization;
 using System.Reflection;
 using cAlgo.API;
 using cAlgo.API.Indicators;
@@ -30,6 +25,7 @@ namespace cAlgo.Robots
     public enum CloverSetup { Trend, MeanReversion, Breakout }
     public enum CloverRiskBase { Balance, Equity }
     public enum VolTargetMode { AtrBased, StdDevBased }
+    public enum VolTargetScaleMode { RiskPctScale, NotionalScale }
 
     internal struct SessionKey : IEquatable<SessionKey>
     {
@@ -50,23 +46,28 @@ namespace cAlgo.Robots
 
     internal sealed class CloverTradeState
     {
-        public int     PositionId;
-        public double  EntryPrice;
-        public double  InitialSlPips;
-        public double  InitialVolumeUnits;
-        public double  RRRTarget;
-        public bool    BreakEvenDone;
-        public bool    Partial1Done;
-        public bool    Partial2Done;
-        public double  ChandelierStop;      // long: highest(high) - k*ATR ; short: lowest(low) + k*ATR
-        public DateTime EntryTime;
+        public int        PositionId;
+        public double     EntryPrice;
+        public double     InitialSlPips;
+        public double     InitialVolumeUnits;
+        public double     RRRTarget;
+        public bool       BreakEvenDone;
+        public bool       Partial1Done;
+        public bool       Partial2Done;
+        public double     ChandelierStop;           // long: highest(high) - k*ATR ; short: lowest(low) + k*ATR
+        public DateTime   EntryTime;
         public CloverEdge Edge;
         public CloverSetup Setup;
-        public double  EntrySlippage;       // pips: intended vs actual entry price
-        public double  ChandelierPeakHigh;  // cached peak high since entry (long)
-        public double  ChandelierPeakLow;   // cached peak low since entry (short)
-        public DateTime LastChandelierUpdateTime;  // last bar processed for peak update
-        public int     EntryBarIndex;       // Bars.Count - 1 at entry; for MaxHold optimization
+        public double     EntrySlippage;            // pips: intended vs actual entry price
+        public double     ExitSlippagePips;         // pips: accumulated exit slippage (partials + force-close)
+        public double     ChandelierPeakHigh;       // cached peak high since entry (long)
+        public double     ChandelierPeakLow;        // cached peak low since entry (short)
+        public DateTime   LastChandelierUpdateTime;
+        public int        EntryBarIndex;            // Bars.Count - 1 at entry; for MaxHold O(1)
+        public double     MaeRMultiple;             // most adverse R reached during trade (negative = against)
+        public double     MfeRMultiple;             // most favorable R reached during trade
+        public SessionKey EntrySessionKey;          // session frozen at entry time for accurate attribution
+        public bool       RecoveredWithoutMetadata; // P0-4: true when recovery could not parse edge/setup from comment
     }
 
     [Robot("Clover Algo", AccessRights = AccessRights.None)]
@@ -79,18 +80,50 @@ namespace cAlgo.Robots
         private const double SPREAD_FLOOR_PIPS = 0.3;
         private const double CHANDELIER_SL_CAP_PIPS = 2.0;
         private const double MARGIN_SCALING_FACTOR = 0.8;
+        private const int    TRADING_DAYS_PER_YEAR = 252;
 
         private static readonly Dictionary<string, object> CANONICAL_DEFAULTS = new Dictionary<string, object>
         {
-            { "RiskPerTradePct", 0.5 },
-            { "MaxDailyDdPct", 3.0 },
-            { "MaxWeeklyDdPct", 6.0 },
-            { "AtrPeriod", 14 },
-            { "AtrSlMultiplier", 1.8 },
-            { "SessionStartHour", 7 },
-            { "SessionEndHour", 20 },
-            { "MaxMarginUtilizationPct", 30.0 },
-            { "RegimeHysteresisBand", 0.05 }
+            { "RiskPerTradePct",              0.5  },
+            { "MaxDailyDdPct",                3.0  },
+            { "MaxWeeklyDdPct",               6.0  },
+            { "AtrPeriod",                    14   },
+            { "AtrSlMultiplier",              1.8  },
+            { "SessionStartHour",             7    },
+            { "SessionEndHour",               20   },
+            { "MaxMarginUtilizationPct",      30.0 },
+            { "RegimeHysteresisBand",         0.05 },
+            { "RrrTrend",                     2.5  },
+            { "RrrMR",                        1.3  },
+            { "RrrBreakout",                  2.0  },
+            { "MomoAdxMin",                   22.0 },
+            { "VwapMrAdxMax",                 22.0 },
+            { "VwapMrMinDevAtr",              1.2  },
+            { "HtfEmaPeriod",                 50   },
+            { "OrbDurationMinutes",           60   },
+            { "AtrRatioLow",                  0.80 },
+            { "AtrRatioHigh",                 1.30 },
+            { "MaxTradesPerDay",              4    },
+            // v1.1 defaults
+            { "RegimeRiskMultLowVol",         1.0  },
+            { "RegimeRiskMultNormal",         1.0  },
+            { "RegimeRiskMultHighVol",        1.0  },
+            { "OrbRangeLookbackDays",         60   },
+            { "OrbRangePercentileMax",        30.0 },
+            { "OrbRequireVolumeExpansion",    false },
+            { "OrbVolumeAvgBars",             20   },
+            { "OrbVolumeMultiplier",          1.3  },
+            { "VwapMrUseLimitOrder",          false },
+            { "VwapMrLimitOffsetPips",        0.5  },
+            { "VwapMrLimitTimeoutBars",       3    },
+            { "EquityCurveTrailPct",          0.0  },
+            { "ExportTradeLogCsv",            false },
+            { "ServerTimeIsUtc",              true  },
+            // v1.1.1 defaults
+            { "VolTargetScaleMode",           VolTargetScaleMode.RiskPctScale },
+            { "OrbBackfillHistoryOnStart",    true  },
+            // v1.1.2 defaults
+            { "MaxLossPerTradeUsd",           0.0  },
         };
 
         // ════════════════════════════════════════════════════════════════════
@@ -111,6 +144,22 @@ namespace cAlgo.Robots
         [Parameter("Commission Buffer (Pips, added to SL)", Group = "00 · Core",
             DefaultValue = 0.6, MinValue = 0.0, Step = 0.1)]
         public double CommissionBufferPips { get; set; }
+
+        [Parameter("Entry Market Range Pips (0 = broker default, caps max slippage)", Group = "00 · Core",
+            DefaultValue = 0.0, MinValue = 0.0, MaxValue = 20.0, Step = 0.1)]
+        public double EntryMarketRangePips { get; set; }
+
+        [Parameter("Regime Risk Mult – LowVol (1.0 = no change)", Group = "00 · Core",
+            DefaultValue = 1.0, MinValue = 0.25, MaxValue = 1.5, Step = 0.05)]
+        public double RegimeRiskMultLowVol { get; set; }
+
+        [Parameter("Regime Risk Mult – Normal (1.0 = no change)", Group = "00 · Core",
+            DefaultValue = 1.0, MinValue = 0.5, MaxValue = 1.5, Step = 0.05)]
+        public double RegimeRiskMultNormal { get; set; }
+
+        [Parameter("Regime Risk Mult – HighVol (1.0 = no change)", Group = "00 · Core",
+            DefaultValue = 1.0, MinValue = 0.25, MaxValue = 1.5, Step = 0.05)]
+        public double RegimeRiskMultHighVol { get; set; }
 
         // ── 01 · Edges (enable/disable) ──────────────────────────────────────
         [Parameter("Enable ORB (Opening Range Breakout)", Group = "01 · Edges", DefaultValue = true)]
@@ -137,6 +186,10 @@ namespace cAlgo.Robots
         [Parameter("Force Close on Weekend (Fri server hour)", Group = "02 · Time & Session",
             DefaultValue = 20, MinValue = 0, MaxValue = 23)]
         public int WeekendCloseHour { get; set; }
+
+        [Parameter("Treat Server.Time as UTC (observational only – warns if deviation > 30min)", Group = "02 · Time & Session",
+            DefaultValue = true)]
+        public bool ServerTimeIsUtc { get; set; }
 
         // ── 03 · HTF Regime Filter ───────────────────────────────────────────
         [Parameter("HTF TimeFrame", Group = "03 · HTF Regime", DefaultValue = "Hour1")]
@@ -199,9 +252,35 @@ namespace cAlgo.Robots
         [Parameter("ORB require NR7 squeeze (range < last 7d)", Group = "06 · ORB", DefaultValue = true)]
         public bool OrbRequireNr7 { get; set; }
 
+        [Parameter("ORB NR7 Strict Warmup (block until 7 ORB ranges captured)", Group = "06 · ORB", DefaultValue = false)]
+        public bool OrbNr7StrictWarmup { get; set; }
+
+        [Parameter("ORB Backfill Range History on Start (pre-fill from historical bars, default ON)", Group = "06 · ORB", DefaultValue = true)]
+        public bool OrbBackfillHistoryOnStart { get; set; }
+
         [Parameter("ORB entry cutoff hour (no entries after)", Group = "06 · ORB",
             DefaultValue = 14, MinValue = 1, MaxValue = 23)]
         public int OrbEntryCutoffHour { get; set; }
+
+        [Parameter("ORB Range Lookback Days (volatility percentile history)", Group = "06 · ORB",
+            DefaultValue = 60, MinValue = 7, MaxValue = 252)]
+        public int OrbRangeLookbackDays { get; set; }
+
+        [Parameter("ORB Range Percentile Threshold (entry if range ≤ X-th pct of history)", Group = "06 · ORB",
+            DefaultValue = 30.0, MinValue = 5.0, MaxValue = 50.0, Step = 1.0)]
+        public double OrbRangePercentileMax { get; set; }
+
+        [Parameter("ORB require volume expansion (TickVol > avg × multiplier)", Group = "06 · ORB",
+            DefaultValue = false)]
+        public bool OrbRequireVolumeExpansion { get; set; }
+
+        [Parameter("ORB volume expansion – avg lookback bars", Group = "06 · ORB",
+            DefaultValue = 20, MinValue = 5, MaxValue = 100)]
+        public int OrbVolumeAvgBars { get; set; }
+
+        [Parameter("ORB volume expansion – multiplier vs avg", Group = "06 · ORB",
+            DefaultValue = 1.3, MinValue = 1.0, MaxValue = 3.0, Step = 0.1)]
+        public double OrbVolumeMultiplier { get; set; }
 
         // ── 07 · VWAP MR Params ──────────────────────────────────────────────
         [Parameter("VWAP: ADX max for MR regime (trade only if ADX <= X)", Group = "07 · VWAP MR",
@@ -215,6 +294,26 @@ namespace cAlgo.Robots
         [Parameter("VWAP: require RSI extreme (<30 long / >70 short)", Group = "07 · VWAP MR",
             DefaultValue = true)]
         public bool VwapMrRequireRsi { get; set; }
+
+        [Parameter("VWAP: RSI Period", Group = "07 · VWAP MR",
+            DefaultValue = 14, MinValue = 2, MaxValue = 50)]
+        public int VwapMrRsiPeriod { get; set; }
+
+        [Parameter("VWAP: Daily Anchor Hour UTC (0 = midnight reset)", Group = "07 · VWAP MR",
+            DefaultValue = 0, MinValue = 0, MaxValue = 23)]
+        public int VwapAnchorHourUtc { get; set; }
+
+        [Parameter("VWAP MR use Limit order (passive entry)", Group = "07 · VWAP MR",
+            DefaultValue = false)]
+        public bool VwapMrUseLimitOrder { get; set; }
+
+        [Parameter("VWAP MR Limit offset pips (entry vs current price)", Group = "07 · VWAP MR",
+            DefaultValue = 0.5, MinValue = 0.0, MaxValue = 5.0, Step = 0.1)]
+        public double VwapMrLimitOffsetPips { get; set; }
+
+        [Parameter("VWAP MR Limit timeout bars (cancel if not filled)", Group = "07 · VWAP MR",
+            DefaultValue = 3, MinValue = 1, MaxValue = 10)]
+        public int VwapMrLimitTimeoutBars { get; set; }
 
         // ── 08 · Momentum Cont. Params ───────────────────────────────────────
         [Parameter("Momo: EMA Fast", Group = "08 · Momentum",
@@ -323,6 +422,10 @@ namespace cAlgo.Robots
             DefaultValue = 6.0, MinValue = 0.0, MaxValue = 50.0, Step = 0.1)]
         public double MaxWeeklyDdPct { get; set; }
 
+        [Parameter("Max Floating Daily DD (%, 0 = off, force-closes open trade)", Group = "11 · Risk Gates",
+            DefaultValue = 0.0, MinValue = 0.0, MaxValue = 50.0, Step = 0.1)]
+        public double MaxFloatingDailyDdPct { get; set; }
+
         [Parameter("Max Trades per Day", Group = "11 · Risk Gates",
             DefaultValue = 4, MinValue = 1, MaxValue = 50)]
         public int MaxTradesPerDay { get; set; }
@@ -339,12 +442,33 @@ namespace cAlgo.Robots
             DefaultValue = 0.7, MinValue = 0.3, MaxValue = 1.0, Step = 0.05)]
         public double ConsecLossSizeReducer { get; set; }
 
+        [Parameter("Persist Streak Counter Across Restarts (LocalStorage)", Group = "11 · Risk Gates", DefaultValue = false)]
+        public bool PersistStreakCounter { get; set; }
+
+        [Parameter("News Blackout UTC (CSV: yyyy-MM-dd HH:mm±min, e.g. 2026-05-07 12:30±30)", Group = "11 · Risk Gates",
+            DefaultValue = "")]
+        public string NewsBlackoutCsv { get; set; }
+
+        [Parameter("Force Flat During News Blackout (close open trade)", Group = "11 · Risk Gates", DefaultValue = false)]
+        public bool ForceFlatInBlackout { get; set; }
+
+        [Parameter("Equity Curve Trail Stop (% from session HWM, 0 = off)", Group = "11 · Risk Gates",
+            DefaultValue = 0.0, MinValue = 0.0, MaxValue = 30.0, Step = 0.5)]
+        public double EquityCurveTrailPct { get; set; }
+
+        [Parameter("Per-Trade Hard Loss Cap ($, 0 = off)", Group = "11 · Risk Gates",
+            DefaultValue = 0.0, MinValue = 0.0, Step = 1.0)]
+        public double MaxLossPerTradeUsd { get; set; }
+
         // ── 12 · Vol-Targeted Sizing ─────────────────────────────────────────
         [Parameter("Enable Vol-Targeted Sizing", Group = "12 · Sizing", DefaultValue = false)]
         public bool EnableVolTargetSizing { get; set; }
 
         [Parameter("Vol Target Mode", Group = "12 · Sizing", DefaultValue = VolTargetMode.AtrBased)]
         public VolTargetMode VolTargetMode { get; set; }
+
+        [Parameter("Vol Target Scale Mode (RiskPctScale=legacy double-scales; NotionalScale=institutional fix)", Group = "12 · Sizing", DefaultValue = VolTargetScaleMode.RiskPctScale)]
+        public VolTargetScaleMode VolTargetScaleMode { get; set; }
 
         [Parameter("Baseline ATR Pips (reference, ATR-based mode)", Group = "12 · Sizing",
             DefaultValue = 12.0, MinValue = 1.0, Step = 0.5)]
@@ -375,7 +499,10 @@ namespace cAlgo.Robots
         [Parameter("Lock Parameters (prevent live changes)", Group = "13 · Logging", DefaultValue = false)]
         public bool LockParameters { get; set; }
 
-        [Parameter("Parameter Set ID (WF compatibility)", Group = "13 · Logging", DefaultValue = "v1.0.12")]
+        [Parameter("Export trade log CSV on Stop", Group = "13 · Logging", DefaultValue = false)]
+        public bool ExportTradeLogCsv { get; set; }
+
+        [Parameter("Parameter Set ID (WF compatibility)", Group = "13 · Logging", DefaultValue = "v1.1.2")]
         public string ParameterSetId { get; set; }
 
         // ════════════════════════════════════════════════════════════════════
@@ -386,6 +513,7 @@ namespace cAlgo.Robots
         private MovingAverage _htfEma;
         private AverageTrueRange _atr;
         private AverageTrueRange _atrChandelier;
+        private AverageTrueRange _dailyAtr;         // P0-1: daily-TF ATR for regime ratio (same unit as daily median)
         private MovingAverage _emaFast;
         private MovingAverage _emaSlow;
         private RelativeStrengthIndex _rsi;
@@ -414,6 +542,8 @@ namespace cAlgo.Robots
         private bool _orbReady;
         private bool _orbLongTaken;
         private bool _orbShortTaken;
+        // LinkedList of ORB intraday ranges (capped at OrbRangeLookbackDays) for percentile filter.
+        private readonly LinkedList<double> _orbRangeHistory = new LinkedList<double>();
 
         // VWAP incremental
         private DateTime _vwapDate = DateTime.MinValue;
@@ -422,14 +552,39 @@ namespace cAlgo.Robots
         private double _cachedVwap;
         private DateTime _lastVwapBarTime = DateTime.MinValue;
 
+        // News blackout windows: (centerUtc, halfWindowMinutes)
+        private List<(DateTime center, int halfMinutes)> _newsBlackouts = new List<(DateTime, int)>();
+
+        // P1-4: pending VWAP-MR limit order tracking
+        private PendingOrder _pendingVwapMrLimit;
+        private int _pendingLimitPlacedBarIndex;
+        // P0-2: metadata snapshot for VWAP-MR limit orders (filled via OnPositionOpened)
+        private (CloverEdge edge, CloverSetup setup, double rrr, double slPips, DateTime placedAt)? _pendingVwapMrLimitMeta;
+
+        // P2-1: trade log rows for CSV export
+        private List<string> _tradeLogRows = new List<string>();
+        private CloverRegime _tradeOpenRegime = CloverRegime.Normal;
+
+        // P2-2: equity-curve trail-stop HWM (session-wide, no daily reset)
+        private double _runHighWaterMarkBalance;
+
+        // P0-1: daily R-sum aggregation for correct Sharpe/Sortino annualisation
+        private Dictionary<DateTime, double> _dailyRSum = new Dictionary<DateTime, double>();
+        // P0-2: daily balance snapshots for equity-returns-based Sharpe/Sortino
+        private Dictionary<DateTime, double> _dailyEquityClose = new Dictionary<DateTime, double>();
+
         // Tracking
         private int _totalTradesOpened;
-        private Dictionary<CloverEdge, int> _edgeWinCount = new Dictionary<CloverEdge, int>();
-        private Dictionary<CloverEdge, int> _edgeLossCount = new Dictionary<CloverEdge, int>();
-        private Dictionary<CloverEdge, double> _edgePnlSum = new Dictionary<CloverEdge, double>();
-        private Dictionary<CloverEdge, double> _edgeEntrySlippageSum = new Dictionary<CloverEdge, double>();
-        private Dictionary<CloverEdge, int> _edgeSlippageSampleCount = new Dictionary<CloverEdge, int>();
-        private Dictionary<SessionKey, SessionStats> _sessionStats = new Dictionary<SessionKey, SessionStats>();
+        private Dictionary<CloverEdge, int>    _edgeWinCount              = new Dictionary<CloverEdge, int>();
+        private Dictionary<CloverEdge, int>    _edgeLossCount             = new Dictionary<CloverEdge, int>();
+        private Dictionary<CloverEdge, double> _edgePnlSum                = new Dictionary<CloverEdge, double>();
+        private Dictionary<CloverEdge, double> _edgeEntrySlippageSum      = new Dictionary<CloverEdge, double>();
+        private Dictionary<CloverEdge, int>    _edgeSlippageSampleCount   = new Dictionary<CloverEdge, int>();
+        private Dictionary<CloverEdge, double> _edgeExitSlippageSum       = new Dictionary<CloverEdge, double>();
+        private Dictionary<CloverEdge, int>    _edgeExitSlippageCount     = new Dictionary<CloverEdge, int>();
+        private Dictionary<CloverEdge, double> _edgeMaeSum                = new Dictionary<CloverEdge, double>();
+        private Dictionary<CloverEdge, double> _edgeMfeSum                = new Dictionary<CloverEdge, double>();
+        private Dictionary<SessionKey, SessionStats> _sessionStats        = new Dictionary<SessionKey, SessionStats>();
         private List<double> _rMultiples = new List<double>();
 
         // ════════════════════════════════════════════════════════════════════
@@ -438,10 +593,20 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   Clover Algo v1.0.15 - Starting              ║");
+            Print("║   Clover Algo v1.1.2 - Starting               ║");
             Print("║   ParameterSetId: {0,-25} ║", ParameterSetId);
             Print("╚══════════════════════════════════════════════╝");
             _startTime = Server.Time;
+
+            if (ParameterSetId == "v1.1.2")
+                Print("Clover v1.1.2 starting | Bug-Fix Sprint: Sharpe sqrt(252), VWAP limit fill adoption, EntryBar recovery, stats-skip, margin-cap direct-solve, HardLossCap, UTC-explicit gates");
+
+            // P1-2: Server.Time UTC sanity check (observational only — no arithmetic changed)
+            double serverUtcDeltaMin = Math.Abs((Server.Time - DateTime.UtcNow).TotalMinutes);
+            if (serverUtcDeltaMin > 30)
+                Print("WARNING: Server.Time deviates from system UTC by {0:F1}min — session/news gates may be off", serverUtcDeltaMin);
+            if (!ServerTimeIsUtc)
+                Print("CRITICAL: ServerTimeIsUtc=false — all hour-based session/news gates use server local time, NOT UTC. Review session hours.");
 
             if (!ValidateParameters())
             {
@@ -453,22 +618,45 @@ namespace cAlgo.Robots
             _atrChandelier = Indicators.AverageTrueRange(AtrPeriod, MovingAverageType.WilderSmoothing);
             _emaFast = Indicators.MovingAverage(Bars.ClosePrices, MomoEmaFast, MovingAverageType.Exponential);
             _emaSlow = Indicators.MovingAverage(Bars.ClosePrices, MomoEmaSlow, MovingAverageType.Exponential);
-            _rsi = Indicators.RelativeStrengthIndex(Bars.ClosePrices, 14);
+            _rsi = Indicators.RelativeStrengthIndex(Bars.ClosePrices, VwapMrRsiPeriod);  // P1-7
             _dms = Indicators.DirectionalMovementSystem(14);
 
             _htfBars = MarketData.GetBars(HtfTimeFrame, SymbolName);
+            WarmupBars(_htfBars, HtfEmaPeriod + 50, "HTF");
             _htfEma = Indicators.MovingAverage(_htfBars.ClosePrices, HtfEmaPeriod, MovingAverageType.Exponential);
 
             _dailyBars = MarketData.GetBars(TimeFrame.Daily, SymbolName);
+            int dailyNeeded = Math.Max(MedianLookbackDays, VolLookbackDays) + 10;
+            WarmupBars(_dailyBars, dailyNeeded, "Daily");
+
+            // P0-1: build daily ATR on the daily bars series so regime ratio uses same TF as median
+            _dailyAtr = Indicators.AverageTrueRange(_dailyBars, AtrPeriod, MovingAverageType.WilderSmoothing);
 
             foreach (CloverEdge e in Enum.GetValues(typeof(CloverEdge)))
             {
-                _edgeWinCount[e] = 0;
-                _edgeLossCount[e] = 0;
-                _edgePnlSum[e] = 0;
-                _edgeEntrySlippageSum[e] = 0;
+                _edgeWinCount[e]            = 0;
+                _edgeLossCount[e]           = 0;
+                _edgePnlSum[e]              = 0;
+                _edgeEntrySlippageSum[e]    = 0;
                 _edgeSlippageSampleCount[e] = 0;
+                _edgeExitSlippageSum[e]     = 0;
+                _edgeExitSlippageCount[e]   = 0;
+                _edgeMaeSum[e]              = 0;
+                _edgeMfeSum[e]              = 0;
             }
+
+            // P0-3: backfill ORB range history from historical M15 bars
+            BackfillOrbRangeHistory();
+
+            // P0-4: backfill VWAP state from same-session M15 bars
+            BackfillVwapState();
+
+            // P1-5: parse news blackout CSV
+            ParseNewsBlackout();
+
+            // P1-4: load persisted streak counter
+            if (PersistStreakCounter)
+                LoadStreakFromStorage();
 
             _dayStartBalance = Account.Balance;
             _weekStartBalance = Account.Balance;
@@ -476,7 +664,9 @@ namespace cAlgo.Robots
             _weekRealizedPnl = 0;
             _botDay = Server.Time.Date;
             _botWeek = GetWeekMonday(Server.Time);
+            _runHighWaterMarkBalance = Account.Balance;  // P2-2: session-wide HWM init
 
+            Positions.Opened += OnPositionOpened;   // P0-2: adopt limit-filled positions
             Positions.Closed += OnPositionClosed;
             RecoverExistingPosition();
 
@@ -498,10 +688,15 @@ namespace cAlgo.Robots
 
         protected override void OnStop()
         {
+            Positions.Opened -= OnPositionOpened;
             Positions.Closed -= OnPositionClosed;
+
+            // P0-2: capture current (final) day's balance for equity-returns Sharpe
+            if (_botDay != DateTime.MinValue)
+                _dailyEquityClose[_botDay] = Account.Balance;
             TimeSpan runtime = Server.Time - _startTime;
             Print("╔══════════════════════════════════════════════╗");
-            Print("║   Clover Algo v1.0.15 (ParameterSetId: {0})    ║", ParameterSetId);
+            Print("║   Clover Algo v1.1.2 (ParameterSetId: {0})    ║", ParameterSetId);
             Print("║   Stopped                                      ║");
             Print("╚══════════════════════════════════════════════╝");
             Print("  Runtime    : {0:dd\\d\\ hh\\h\\ mm\\m}", runtime);
@@ -548,7 +743,11 @@ namespace cAlgo.Robots
                     double p10 = sortedR[(int)(sortedR.Count * 0.10)];
                     double p90 = sortedR[(int)(sortedR.Count * 0.90)];
                     double sumDev = sortedR.Sum(r => Math.Pow(r - meanR, 3));
-                    double stdDev = Math.Sqrt(sortedR.Sum(r => Math.Pow(r - meanR, 2)) / sortedR.Count);
+                    // P0-1: bias-correct stddev denominator for small samples
+                    int denomN = sortedR.Count < 30 ? (sortedR.Count - 1) : sortedR.Count;
+                    double stdDev = denomN > 0
+                        ? Math.Sqrt(sortedR.Sum(r => Math.Pow(r - meanR, 2)) / denomN)
+                        : 0;
                     double skewness = stdDev > 0 ? sumDev / (sortedR.Count * stdDev * stdDev * stdDev) : 0;
                     double expectancy = meanR;
 
@@ -556,9 +755,106 @@ namespace cAlgo.Robots
                         sortedR.Count, meanR, medianR, p10, p90);
                     Print("  stddev={0:F2} skew={1:+0.00;-0.00;0.00} expectancy={2:+0.00;-0.00;0.00}R",
                         stdDev, skewness, expectancy);
+
+                    // P0-1: Risk-adjusted metrics — daily R-sum series, sqrt(252) annualisation
+                    Print("BREAKING v1.1.2: Sharpe annualisation fixed (sqrt(N)→sqrt(252))");
+                    Print("── Performance Metrics (R-based, daily annualisation) ─────");
+                    double peak = 0, cumR = 0, maxDdR = 0;
+                    foreach (double r in _rMultiples)
+                    {
+                        cumR += r;
+                        if (cumR > peak) peak = cumR;
+                        double dd = peak - cumR;
+                        if (dd > maxDdR) maxDdR = dd;
+                    }
+
+                    double grossWin  = _rMultiples.Where(r => r > 0).Sum();
+                    double grossLoss = Math.Abs(_rMultiples.Where(r => r < 0).Sum());
+                    double pf = grossLoss > 0 ? grossWin / grossLoss : double.PositiveInfinity;
+
+                    if (_dailyRSum.Count < 30)
+                    {
+                        Print("  Sharpe=N/A (insufficient sample: {0} trading days < 30)", _dailyRSum.Count);
+                        Print("  Sortino=N/A");
+                    }
+                    else
+                    {
+                        var dailyReturns = _dailyRSum.Values.ToList();
+                        double dailyMean  = dailyReturns.Average();
+                        int    nDays      = dailyReturns.Count;
+                        double dailyStdDev = nDays > 1
+                            ? Math.Sqrt(dailyReturns.Sum(r => Math.Pow(r - dailyMean, 2)) / (nDays - 1))
+                            : 0;
+                        double sharpe  = dailyStdDev > 0 ? dailyMean / dailyStdDev * Math.Sqrt(TRADING_DAYS_PER_YEAR) : 0;
+
+                        var negDaily   = dailyReturns.Where(r => r < 0).ToList();
+                        double downDev = negDaily.Count > 0
+                            ? Math.Sqrt(negDaily.Sum(r => r * r) / nDays)
+                            : 0;
+                        double sortino = downDev > 0 ? dailyMean / downDev * Math.Sqrt(TRADING_DAYS_PER_YEAR) : 0;
+
+                        Print("  Sharpe={0:+0.00;-0.00;0.00} (annualised, 252d) | sample N={1}d",
+                            sharpe, nDays);
+                        Print("  Sortino={0:+0.00;-0.00;0.00}  MaxDD={1:F2}R  ProfitFactor={2:F2}",
+                            sortino, maxDdR, pf);
+                    }
+
+                    Print("  GrossWin={0:F2}R  GrossLoss={1:F2}R  Expectancy={2:+0.00;-0.00;0.00}R",
+                        grossWin, grossLoss, expectancy);
+                }
+
+                // P0-2: Equity-returns Sharpe (daily balance series — independent of R-multiple scale)
+                Print("── Performance (Equity-Returns, $ daily series) ─────");
+                if (_dailyEquityClose.Count >= 2)
+                {
+                    var sortedEqDays = _dailyEquityClose.OrderBy(k => k.Key).ToList();
+                    var eqReturns    = new List<double>();
+                    for (int i = 1; i < sortedEqDays.Count; i++)
+                    {
+                        double prevBal = sortedEqDays[i - 1].Value;
+                        double currBal = sortedEqDays[i].Value;
+                        if (prevBal > 0) eqReturns.Add((currBal - prevBal) / prevBal);
+                    }
+                    int eqN = eqReturns.Count;
+                    if (eqN < 30)
+                    {
+                        Print("  Equity-Sharpe=N/A  Equity-Sortino=N/A  (only {0} days < 30)", eqN);
+                    }
+                    else
+                    {
+                        double eqMean    = eqReturns.Average();
+                        double eqVar     = eqReturns.Sum(r => Math.Pow(r - eqMean, 2)) / (eqN - 1);
+                        double eqStd     = Math.Sqrt(eqVar);
+                        double eqSharpe  = eqStd > 0 ? eqMean / eqStd * Math.Sqrt(TRADING_DAYS_PER_YEAR) : 0;
+                        var    negEq     = eqReturns.Where(r => r < 0).ToList();
+                        double eqDownDev = negEq.Count > 0 ? Math.Sqrt(negEq.Sum(r => r * r) / eqN) : 0;
+                        double eqSortino = eqDownDev > 0 ? eqMean / eqDownDev * Math.Sqrt(TRADING_DAYS_PER_YEAR) : 0;
+                        Print("  Equity-Sharpe={0:+0.00;-0.00;0.00} (annualised, 252d) | sample N={1}d",
+                            eqSharpe, eqN);
+                        Print("  Equity-Sortino={0:+0.00;-0.00;0.00}", eqSortino);
+                    }
+                }
+                else
+                {
+                    Print("  Equity-Sharpe=N/A  (no daily equity history — run lasted < 2 days)");
+                }
+
+                // P1-1: MAE/MFE per-edge summary
+                Print("── MAE / MFE per Edge ───────────────────────────");
+                foreach (CloverEdge e in Enum.GetValues(typeof(CloverEdge)))
+                {
+                    int total = _edgeWinCount[e] + _edgeLossCount[e];
+                    if (total == 0) continue;
+                    double avgMae = _edgeMaeSum[e] / total;
+                    double avgMfe = _edgeMfeSum[e] / total;
+                    double avgExitSlip = _edgeExitSlippageCount[e] > 0
+                        ? _edgeExitSlippageSum[e] / _edgeExitSlippageCount[e] : 0;
+                    Print("  {0,-10} avgMAE={1:+0.00;-0.00;0.00}R  avgMFE={2:+0.00;-0.00;0.00}R  exit_slip={3:+0.0;-0.0;0.0}p",
+                        e, avgMae, avgMfe, avgExitSlip);
                 }
 
                 PersistAttributionJson();
+                ExportTradeLogCsvFile();
             }
         }
 
@@ -578,12 +874,45 @@ namespace cAlgo.Robots
                     return;
                 }
 
+                // P1-5: force flat during news blackout if enabled
+                if (ForceFlatInBlackout && _currentTrade != null)
+                {
+                    DateTime now2 = Server.Time;
+                    foreach (var (center, halfMin) in _newsBlackouts)
+                    {
+                        if (Math.Abs((now2 - center).TotalMinutes) <= halfMin)
+                        {
+                            ClosePositionIfOpen($"NewsBlackout({center:HH:mm})");
+                            return;
+                        }
+                    }
+                }
+
                 // Need enough history for every indicator.
                 if (Bars.Count < Math.Max(MomoEmaSlow, AtrPeriod) + 5) return;
-                if (_htfBars.Count < HtfEmaPeriod + 2) return;
+                // HTF soft-gate: if EMA is not yet valid, GetHtfBias() returns 0
+                // and Momo skips itself; ORB/VwapMR still trade (bias>=0 / <=0).
+                // With OnStart warmup this branch is normally unreached.
 
                 // Update ORB window state once per bar.
                 UpdateOrbState();
+
+                // P1-4: cancel stale VWAP-MR limit order if timeout exceeded
+                CancelStaleLimitOrder();
+
+                // P0-5: update MAE/MFE from bar High/Low — complements OnTick for sparse-tick
+                //        periods and low-fidelity backtests where ticks miss bar extremes
+                if (_currentTrade != null && _currentTrade.InitialSlPips > 0)
+                {
+                    var mfmPos = Positions.FindById(_currentTrade.PositionId);
+                    if (mfmPos != null)
+                    {
+                        double barFavorR   = ComputeBarMaxR(mfmPos, _currentTrade.InitialSlPips);
+                        double barAdverseR = ComputeBarMinR(mfmPos, _currentTrade.InitialSlPips);
+                        if (barFavorR   > _currentTrade.MfeRMultiple) _currentTrade.MfeRMultiple = barFavorR;
+                        if (barAdverseR < _currentTrade.MaeRMultiple) _currentTrade.MaeRMultiple = barAdverseR;
+                    }
+                }
 
                 // If an open position exists, no new entries — just management.
                 if (_currentTrade != null) return;
@@ -593,6 +922,7 @@ namespace cAlgo.Robots
 
                 // Regime classification.
                 CloverRegime regime = ClassifyRegime();
+                _tradeOpenRegime = regime;  // P2-1: snapshot for CSV trade log
                 int htfBias = GetHtfBias(); // +1 bull, -1 bear, 0 flat
 
                 // Skip new entries on the bar immediately after regime change
@@ -636,10 +966,22 @@ namespace cAlgo.Robots
 
             try
             {
+                // P1-1: update MAE/MFE on every tick
+                if (_currentTrade.InitialSlPips > 0)
+                {
+                    double curR = ComputeCurrentR(pos, _currentTrade.InitialSlPips);
+                    if (curR > _currentTrade.MfeRMultiple) _currentTrade.MfeRMultiple = curR;
+                    if (curR < _currentTrade.MaeRMultiple) _currentTrade.MaeRMultiple = curR;
+                }
+
                 ManageBreakEven(pos);
                 ManagePartials(pos);
                 ManageChandelier(pos);
                 ManageMaxHold(pos);
+
+                // P1-6: per-trade hard dollar loss cap (default 0 = off, no backtest impact)
+                if (MaxLossPerTradeUsd > 0 && pos.NetProfit <= -MaxLossPerTradeUsd)
+                    ClosePositionIfOpen("HardLossCap");
             }
             catch (Exception ex)
             {
@@ -717,19 +1059,27 @@ namespace cAlgo.Robots
         // ════════════════════════════════════════════════════════════════════
         private bool IsMarketTradable()
         {
-            DateTime now = Server.Time;
+            DateTime now    = Server.Time;
+            DateTime nowUtc = NowUtc();  // P1-7: use UTC for session/DoW gates
 
             if (_dailyDdBreached) return Reject("DailyDD hit");
             if (_weeklyDdBreached) return Reject("WeeklyDD hit");
             if (_tradesToday >= MaxTradesPerDay) return Reject("MaxTradesPerDay");
             if (now < _cooldownEndTime) return Reject("CoolDown");
 
-            // Session window
-            int hour = now.Hour;
+            // P1-5: news blackout gate
+            foreach (var (center, halfMin) in _newsBlackouts)
+            {
+                if (Math.Abs((now - center).TotalMinutes) <= halfMin)
+                    return Reject($"NewsBlackout ({center:yyyy-MM-dd HH:mm} ±{halfMin}m)");
+            }
+
+            // Session window — UTC hours
+            int hour = nowUtc.Hour;
             if (hour < SessionStartHour || hour >= SessionEndHour) return Reject("OutsideSession");
 
-            // Friday block
-            if (BlockFriday && now.DayOfWeek == DayOfWeek.Friday) return Reject("FridayBlock");
+            // Friday block — UTC DoW
+            if (BlockFriday && nowUtc.DayOfWeek == DayOfWeek.Friday) return Reject("FridayBlock");
 
             // Spread gate: hard cap + dynamic ATR-scaled cap
             double spreadPips = Symbol.Spread / Symbol.PipSize;
@@ -746,41 +1096,61 @@ namespace cAlgo.Robots
             return false;
         }
 
-        // Regime: ATR(today) / Median(last N daily ATR proxies) with hysteresis
+        // Regime: DailyATR(today) / Median(last N daily TRs) with asymmetric hysteresis.
+        // P0-1: uses _dailyAtr (Wilder on daily bars) — same unit as daily TR median.
+        // Pre-v1.0.18 used M15 ATR (~5-12p) vs Daily TR (~70-100p) = ratio 0.05-0.15 → always LowVol.
         private CloverRegime ClassifyRegime()
         {
             if (_dailyBars == null || _dailyBars.Count < MedianLookbackDays + 2)
                 return _lastRegime;
+            if (_dailyAtr == null) return _lastRegime;
+
+            double dailyAtrPrice = _dailyAtr.Result.Last(1);
+            if (double.IsNaN(dailyAtrPrice) || dailyAtrPrice <= 0) return _lastRegime;
 
             double[] trs = new double[MedianLookbackDays];
             for (int i = 0; i < MedianLookbackDays; i++)
             {
                 int idx = i + 1;
                 if (idx + 1 >= _dailyBars.Count) return _lastRegime;
-                double h = _dailyBars.HighPrices.Last(idx);
-                double l = _dailyBars.LowPrices.Last(idx);
+                double h  = _dailyBars.HighPrices.Last(idx);
+                double l  = _dailyBars.LowPrices.Last(idx);
                 double c1 = _dailyBars.ClosePrices.Last(idx + 1);
                 double tr = Math.Max(h - l, Math.Max(Math.Abs(h - c1), Math.Abs(l - c1)));
                 trs[i] = tr;
             }
             Array.Sort(trs);
-            double median = trs[MedianLookbackDays / 2];
+
+            // P0-3: correct median for even sample size — average of two middle elements
+            int n = MedianLookbackDays;
+            double median = (n % 2 == 0)
+                ? (trs[n / 2 - 1] + trs[n / 2]) / 2.0
+                : trs[n / 2];
             if (median <= 0) return _lastRegime;
 
-            double currAtrPips = GetAtrPips();
-            double currAtrPrice = currAtrPips * Symbol.PipSize;
-            double ratio = currAtrPrice / median;
+            double ratio = dailyAtrPrice / median;
 
-            double lowBand = AtrRatioLow - RegimeHysteresisBand;
-            double highBand = AtrRatioHigh + RegimeHysteresisBand;
-
+            // Asymmetric state-dependent hysteresis: thresholds differ based on current regime
+            // to prevent flicker at boundaries. Only cross when clearly outside the hysteresis band.
             CloverRegime newRegime = _lastRegime;
-            if (ratio <= lowBand)
-                newRegime = CloverRegime.LowVol;
-            else if (ratio >= highBand)
-                newRegime = CloverRegime.HighVol;
-            else
-                newRegime = CloverRegime.Normal;
+            switch (_lastRegime)
+            {
+                case CloverRegime.LowVol:
+                    if (ratio > AtrRatioLow + RegimeHysteresisBand)
+                        newRegime = ratio >= AtrRatioHigh ? CloverRegime.HighVol : CloverRegime.Normal;
+                    break;
+                case CloverRegime.HighVol:
+                    if (ratio < AtrRatioHigh - RegimeHysteresisBand)
+                        newRegime = ratio <= AtrRatioLow ? CloverRegime.LowVol : CloverRegime.Normal;
+                    break;
+                case CloverRegime.Normal:
+                default:
+                    if (ratio <= AtrRatioLow)
+                        newRegime = CloverRegime.LowVol;
+                    else if (ratio >= AtrRatioHigh)
+                        newRegime = CloverRegime.HighVol;
+                    break;
+            }
 
             if (newRegime != _lastRegime)
             {
@@ -789,6 +1159,21 @@ namespace cAlgo.Robots
                 if (Verbose) Print("Regime change: {0} (ratio={1:F3})", newRegime, ratio);
             }
             return _lastRegime;
+        }
+
+        // Force-loads historical bars into a non-main-TF series so indicators
+        // built on top of it (EMA, medians) are valid from the first OnBar
+        // instead of requiring N live bars to accumulate.
+        private void WarmupBars(Bars bars, int needed, string label)
+        {
+            if (bars == null) return;
+            int guard = 0;
+            while (bars.Count < needed && guard++ < 20)
+            {
+                int loaded = bars.LoadMoreHistory();
+                if (loaded <= 0) break;
+            }
+            if (Verbose) Print("Warmup {0}: {1} bars (target {2})", label, bars.Count, needed);
         }
 
         private int GetHtfBias()
@@ -814,7 +1199,7 @@ namespace cAlgo.Robots
         // ════════════════════════════════════════════════════════════════════
         private void UpdateOrbState()
         {
-            DateTime now = Server.Time;
+            DateTime now   = NowUtc();   // P1-7: use UTC for ORB window timing
             DateTime today = now.Date;
 
             if (_orbDate != today)
@@ -842,16 +1227,23 @@ namespace cAlgo.Robots
             else if (lastBarOpen >= orbEnd && !_orbReady && _orbHigh > double.MinValue)
             {
                 _orbReady = true;
+                double orbRange = _orbHigh - _orbLow;
+                if (orbRange > 0)
+                {
+                    _orbRangeHistory.AddLast(orbRange);
+                    while (_orbRangeHistory.Count > OrbRangeLookbackDays)
+                        _orbRangeHistory.RemoveFirst();
+                }
                 if (Verbose)
-                    Print("ORB ready: H={0:F5} L={1:F5} range={2:F1}p",
-                        _orbHigh, _orbLow, (_orbHigh - _orbLow) / Symbol.PipSize);
+                    Print("ORB ready: H={0:F5} L={1:F5} range={2:F1}p (vol-pct history={3}/{4})",
+                        _orbHigh, _orbLow, (_orbHigh - _orbLow) / Symbol.PipSize, _orbRangeHistory.Count, OrbRangeLookbackDays);
             }
         }
 
         private bool TryOrbEntry(CloverRegime regime, int htfBias)
         {
             if (!_orbReady) return false;
-            DateTime now = Server.Time;
+            DateTime now = NowUtc();   // P1-7: UTC for cutoff check
             if (now.Hour >= OrbEntryCutoffHour) return false;
 
             // ORB works best in Normal/High-Vol regimes, poorly in LowVol chop.
@@ -864,6 +1256,13 @@ namespace cAlgo.Robots
             double lastClose = Bars.ClosePrices.Last(1);
             double lastHigh = Bars.HighPrices.Last(1);
             double lastLow = Bars.LowPrices.Last(1);
+
+            // P1-3: volume confirmation gate (default OFF)
+            if (OrbRequireVolumeExpansion && !IsVolumeExpanded())
+            {
+                if (Verbose) Print("ORB: volume expansion not confirmed — skipping entry");
+                return false;
+            }
 
             // Long breakout: close above ORB high + buffer, HTF bias not bearish.
             if (!_orbLongTaken && htfBias >= 0
@@ -886,18 +1285,38 @@ namespace cAlgo.Robots
             return false;
         }
 
-        private bool IsNr7Squeeze()
+        // P0-2: volatility-percentile filter — replaces hard NR7 logic.
+        // OrbRequireNr7 param now wires to this method for backwards compat.
+        private bool IsNr7Squeeze() => IsLowRangePercentile();
+
+        private bool IsLowRangePercentile()
         {
-            if (_dailyBars == null || _dailyBars.Count < 8) return true;
             double todayRange = _orbHigh - _orbLow;
             if (todayRange <= 0) return false;
-            for (int i = 1; i <= 7; i++)
+
+            int warmupFloor = 7;  // maintain minimum warmup floor from original NR7
+            if (_orbRangeHistory.Count < warmupFloor)
             {
-                double h = _dailyBars.HighPrices.Last(i);
-                double l = _dailyBars.LowPrices.Last(i);
-                if ((h - l) <= todayRange) return false;
+                if (OrbNr7StrictWarmup)
+                {
+                    if (Verbose) Print("VolPct: warmup {0}/{1} strict=true — blocking entry", _orbRangeHistory.Count, warmupFloor);
+                    return false;
+                }
+                return true;  // allow entry during warmup if strict=false
             }
-            return true;
+
+            // Percentile check: today's range must be <= OrbRangePercentileMax-th percentile of history.
+            var sorted = _orbRangeHistory.OrderBy(x => x).ToList();
+            int n = sorted.Count;
+            double pctIdx = (OrbRangePercentileMax / 100.0) * (n - 1);
+            int lo = (int)pctIdx;
+            int hi = Math.Min(lo + 1, n - 1);
+            double threshold = sorted[lo] + (pctIdx - lo) * (sorted[hi] - sorted[lo]);
+
+            bool result = todayRange <= threshold;
+            if (Verbose) Print("VolPct: range={0:F1}p threshold={1:F1}p ({2:F0}th pct of {3} sessions) → {4}",
+                todayRange / Symbol.PipSize, threshold / Symbol.PipSize, OrbRangePercentileMax, n, result ? "PASS" : "FAIL");
+            return result;
         }
 
         // ════════════════════════════════════════════════════════════════════
@@ -925,12 +1344,16 @@ namespace cAlgo.Robots
             if (devAtrMultiples <= -VwapMrMinDevAtr && htfBias >= 0)
             {
                 if (VwapMrRequireRsi && rsi >= 30) return false;
+                if (VwapMrUseLimitOrder)
+                    return PlaceVwapMrLimit(TradeType.Buy, $"VwapMR Long Limit | dev={devAtrMultiples:F2}ATR rsi={rsi:F1}");
                 return OpenTrade(TradeType.Buy, CloverEdge.VwapMR, CloverSetup.MeanReversion, RrrMR,
                     $"VwapMR Long | dev={devAtrMultiples:F2}ATR rsi={rsi:F1} adx={adx:F1}");
             }
             if (devAtrMultiples >= VwapMrMinDevAtr && htfBias <= 0)
             {
                 if (VwapMrRequireRsi && rsi <= 70) return false;
+                if (VwapMrUseLimitOrder)
+                    return PlaceVwapMrLimit(TradeType.Sell, $"VwapMR Short Limit | dev={devAtrMultiples:F2}ATR rsi={rsi:F1}");
                 return OpenTrade(TradeType.Sell, CloverEdge.VwapMR, CloverSetup.MeanReversion, RrrMR,
                     $"VwapMR Short | dev={devAtrMultiples:F2}ATR rsi={rsi:F1} adx={adx:F1}");
             }
@@ -940,18 +1363,23 @@ namespace cAlgo.Robots
         private void UpdateVwap()
         {
             DateTime now = Server.Time;
-            DateTime today = now.Date;
-            if (_vwapDate != today)
+            // P1-6: daily anchor at VwapAnchorHourUtc instead of midnight
+            DateTime anchorToday = now.Date.AddHours(VwapAnchorHourUtc);
+            DateTime anchorPrev  = anchorToday.AddDays(-1);
+            // session start = most recent anchor that has already passed
+            DateTime sessionStart = now >= anchorToday ? anchorToday : anchorPrev;
+
+            if (_vwapDate != sessionStart)
             {
-                _vwapDate = today;
+                _vwapDate = sessionStart;
                 _vwapSumPv = 0;
                 _vwapSumV = 0;
                 _lastVwapBarTime = DateTime.MinValue;
             }
 
             DateTime lastBarOpen = Bars.OpenTimes.Last(1);
-            if (lastBarOpen == _lastVwapBarTime) return;   // already incorporated
-            if (lastBarOpen.Date != today) return;          // last closed bar belongs to a previous session
+            if (lastBarOpen == _lastVwapBarTime) return;
+            if (lastBarOpen < sessionStart) return;   // bar belongs to previous session
 
             double tp = (Bars.HighPrices.Last(1) + Bars.LowPrices.Last(1) + Bars.ClosePrices.Last(1)) / 3.0;
             double vol = Math.Max(Bars.TickVolumes.Last(1), 1);
@@ -1024,15 +1452,24 @@ namespace cAlgo.Robots
             if (slPips > MaxSlPips) slPips = MaxSlPips;
             double tpPips = Math.Round(slPips * rrr, 1);
 
-            double volume = CalculateVolume(slPips);
+            double volume = CalculateVolume(slPips, dir);
             if (volume < Symbol.VolumeInUnitsMin)
             {
                 Print("REJECT: calculated volume below broker min. slPips={0:F1} vol={1:F0}", slPips, volume);
                 return false;
             }
 
+            // Snapshot intended price BEFORE order submission for accurate slippage measurement.
+            double intendedPrice = dir == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
+
             string metadata = $"|{edge}|{setup}";
-            var result = ExecuteMarketOrder(dir, SymbolName, volume, BotLabel, slPips, tpPips, metadata);
+
+            TradeResult result;
+            if (EntryMarketRangePips > 0)
+                result = ExecuteMarketRangeOrder(dir, SymbolName, volume, EntryMarketRangePips, intendedPrice, BotLabel, slPips, tpPips, metadata);
+            else
+                result = ExecuteMarketOrder(dir, SymbolName, volume, BotLabel, slPips, tpPips, metadata);
+
             if (!result.IsSuccessful || result.Position == null)
             {
                 Print("ORDER FAILED: {0}", result.Error);
@@ -1040,30 +1477,33 @@ namespace cAlgo.Robots
             }
 
             var pos = result.Position;
-            double intendedPrice = dir == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
             double entrySlippagePips = dir == TradeType.Buy
                 ? (pos.EntryPrice - intendedPrice) / Symbol.PipSize
                 : (intendedPrice - pos.EntryPrice) / Symbol.PipSize;
 
             _currentTrade = new CloverTradeState
             {
-                PositionId = pos.Id,
-                EntryPrice = pos.EntryPrice,
-                InitialSlPips = slPips,
-                InitialVolumeUnits = pos.VolumeInUnits,
-                RRRTarget = rrr,
-                BreakEvenDone = false,
-                Partial1Done = false,
-                Partial2Done = false,
-                ChandelierStop = dir == TradeType.Buy ? double.MinValue : double.MaxValue,
-                EntryTime = Server.Time,
-                Edge = edge,
-                Setup = setup,
-                EntrySlippage = entrySlippagePips,
-                ChandelierPeakHigh = dir == TradeType.Buy ? pos.EntryPrice : double.MinValue,
-                ChandelierPeakLow = dir == TradeType.Sell ? pos.EntryPrice : double.MaxValue,
+                PositionId               = pos.Id,
+                EntryPrice               = pos.EntryPrice,
+                InitialSlPips            = slPips,
+                InitialVolumeUnits       = pos.VolumeInUnits,
+                RRRTarget                = rrr,
+                BreakEvenDone            = false,
+                Partial1Done             = false,
+                Partial2Done             = false,
+                ChandelierStop           = dir == TradeType.Buy ? double.MinValue : double.MaxValue,
+                EntryTime                = Server.Time,
+                Edge                     = edge,
+                Setup                    = setup,
+                EntrySlippage            = entrySlippagePips,
+                ExitSlippagePips         = 0,
+                ChandelierPeakHigh       = dir == TradeType.Buy ? pos.EntryPrice : double.MinValue,
+                ChandelierPeakLow        = dir == TradeType.Sell ? pos.EntryPrice : double.MaxValue,
                 LastChandelierUpdateTime = Server.Time,
-                EntryBarIndex = Bars.Count - 1
+                EntryBarIndex            = Bars.Count - 1,
+                MaeRMultiple             = 0,
+                MfeRMultiple             = 0,
+                EntrySessionKey          = GetSessionKey(Server.Time),  // P0-2: frozen at entry
             };
             _totalTradesOpened++;
             _tradesToday++;
@@ -1074,7 +1514,7 @@ namespace cAlgo.Robots
             return true;
         }
 
-        private double CalculateVolume(double slPips)
+        private double CalculateVolume(double slPips, TradeType dir)
         {
             double baseAcct = RiskBase == CloverRiskBase.Equity ? Account.Equity : Account.Balance;
             double riskPct = RiskPerTradePct;
@@ -1083,7 +1523,21 @@ namespace cAlgo.Robots
             if (_consecutiveLosses >= ConsecLossTrigger)
                 riskPct *= ConsecLossSizeReducer;
 
+            // P0-3: volatility-adjusted risk scaling per regime (default mult=1.0 = no change)
+            double regimeMult = _lastRegime == CloverRegime.LowVol  ? RegimeRiskMultLowVol
+                              : _lastRegime == CloverRegime.HighVol ? RegimeRiskMultHighVol
+                              : RegimeRiskMultNormal;
+            if (Math.Abs(regimeMult - 1.0) > 0.001)
+            {
+                double prevRisk = riskPct;
+                riskPct *= regimeMult;
+                if (Verbose) Print("RegimeRiskScale: regime={0} mult={1:F2} riskPct {2:F2}->{3:F2}", _lastRegime, regimeMult, prevRisk, riskPct);
+            }
+
             // Vol-targeted sizing: scale by realized / target vol.
+            // P0-1: RiskPctScale (legacy) applies scale to riskPct, which double-scales with slPips at
+            //        high ATR. NotionalScale defers scale to post-normalization to avoid double-scaling.
+            double volTargetNotionalScale = 1.0;
             if (EnableVolTargetSizing)
             {
                 double scale = 1.0;
@@ -1101,7 +1555,11 @@ namespace cAlgo.Robots
                 }
                 if (scale < 0.5) scale = 0.5;
                 if (scale > 2.0) scale = 2.0;
-                riskPct *= scale;
+
+                if (VolTargetScaleMode == VolTargetScaleMode.RiskPctScale)
+                    riskPct *= scale;  // legacy: scales riskPct (double-scales with slPips at high ATR)
+                else
+                    volTargetNotionalScale = scale;  // P0-1: defer to post-normalization
             }
 
             double riskAmount = baseAcct * (riskPct / 100.0);
@@ -1110,18 +1568,32 @@ namespace cAlgo.Robots
             double exact = riskAmount / (slPips * pipValue);
             double normalized = Symbol.NormalizeVolumeInUnits(exact, RoundingMode.Down);
 
-            // Margin cap: ensure utilization ratio stays within limit.
+            // P0-1: NotionalScale mode — apply vol-target scale to volume after slPips-based sizing
+            if (EnableVolTargetSizing && VolTargetScaleMode == VolTargetScaleMode.NotionalScale
+                && Math.Abs(volTargetNotionalScale - 1.0) > 0.001 && volTargetNotionalScale > 0)
+            {
+                double oldVol = normalized;
+                double scaledVol = normalized / volTargetNotionalScale;
+                normalized = Symbol.NormalizeVolumeInUnits(scaledVol, RoundingMode.Down);
+                if (normalized < Symbol.VolumeInUnitsMin) normalized = Symbol.VolumeInUnitsMin;
+                if (Verbose) Print("VolTarget[NotionalScale]: scale={0:F3} vol {1:F0}->{2:F0}", volTargetNotionalScale, oldVol, normalized);
+            }
+
+            // Margin cap: direct ratio solve — guaranteed to satisfy cap in one step.
             double maxMarginUtilRatio = MaxMarginUtilizationPct / 100.0;
             if (Account.Equity > 0)
             {
-                double projectedMarginNeeded = Account.Margin + (Symbol.PipValue * normalized);
-                double projectedUtilRatio = projectedMarginNeeded / Math.Max(Account.Equity, 1);
-                if (projectedUtilRatio > maxMarginUtilRatio)
+                double maxAllowedNewMargin = maxMarginUtilRatio * Account.Equity - Account.Margin;
+                if (maxAllowedNewMargin <= 0) return Symbol.VolumeInUnitsMin;
+                double currentVolMargin = Symbol.GetEstimatedMargin(dir, normalized);
+                if (currentVolMargin > maxAllowedNewMargin && currentVolMargin > 0)
                 {
-                    normalized = Symbol.NormalizeVolumeInUnits(normalized * MARGIN_SCALING_FACTOR, RoundingMode.Down);
+                    double scale = maxAllowedNewMargin / currentVolMargin;
+                    double oldVol = normalized;
+                    normalized = Symbol.NormalizeVolumeInUnits(normalized * scale, RoundingMode.Down);
                     if (normalized < Symbol.VolumeInUnitsMin) return Symbol.VolumeInUnitsMin;
-                    if (Verbose) Print("MarginCap: util={0:P1} cap={1:P1} scaled vol {2:F0}->{3:F0}",
-                        Account.Margin / Account.Equity, maxMarginUtilRatio, exact, normalized);
+                    if (Verbose) Print("MarginCap: util={0:P1} allowedNewMargin={1:F2} cap={2:P1} scaled vol {3:F0}->{4:F0}",
+                        Account.Margin / Account.Equity, maxAllowedNewMargin, maxMarginUtilRatio, oldVol, normalized);
                 }
             }
 
@@ -1154,6 +1626,98 @@ namespace cAlgo.Robots
             if (variance < 0) variance = 0;
             double stdDev = Math.Sqrt(variance);
             return stdDev;
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        //  P0-3 · ORB RANGE HISTORY BACKFILL
+        // ════════════════════════════════════════════════════════════════════
+        private void BackfillOrbRangeHistory()
+        {
+            if (!OrbBackfillHistoryOnStart) return;
+
+            int daysToCheck = OrbRangeLookbackDays + 5;
+            DateTime today  = Bars.OpenTimes.Last(1).Date;
+            DateTime cutoff = today.AddDays(-daysToCheck);
+
+            var dailyOrbHigh = new Dictionary<DateTime, double>();
+            var dailyOrbLow  = new Dictionary<DateTime, double>();
+
+            for (int i = 0; i < Bars.Count - 1; i++)   // exclude current forming bar
+            {
+                DateTime barOpenTime = Bars.OpenTimes[i];
+                DateTime barDate     = barOpenTime.Date;
+                if (barDate < cutoff) continue;
+                if (barDate == today) continue;   // today accumulated live by UpdateOrbState
+                if (barDate.DayOfWeek == DayOfWeek.Saturday || barDate.DayOfWeek == DayOfWeek.Sunday) continue;
+
+                DateTime orbStart = barDate.AddHours(OrbStartHour);
+                DateTime orbEnd   = orbStart.AddMinutes(OrbDurationMinutes);
+                if (barOpenTime < orbStart || barOpenTime >= orbEnd) continue;
+
+                double h = Bars.HighPrices[i];
+                double l = Bars.LowPrices[i];
+                if (!dailyOrbHigh.ContainsKey(barDate))
+                {
+                    dailyOrbHigh[barDate] = h;
+                    dailyOrbLow[barDate]  = l;
+                }
+                else
+                {
+                    if (h > dailyOrbHigh[barDate]) dailyOrbHigh[barDate] = h;
+                    if (l < dailyOrbLow[barDate])  dailyOrbLow[barDate]  = l;
+                }
+            }
+
+            int sessionsAdded = 0;
+            foreach (var date in dailyOrbHigh.Keys.OrderBy(d => d))
+            {
+                double range = dailyOrbHigh[date] - dailyOrbLow[date];
+                if (range > 0)
+                {
+                    _orbRangeHistory.AddLast(range);
+                    while (_orbRangeHistory.Count > OrbRangeLookbackDays)
+                        _orbRangeHistory.RemoveFirst();
+                    sessionsAdded++;
+                }
+            }
+            Print("ORB-history backfilled: {0} sessions over {1} days", sessionsAdded, daysToCheck);
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        //  P0-4 · VWAP SAME-SESSION BACKFILL
+        // ════════════════════════════════════════════════════════════════════
+        private void BackfillVwapState()
+        {
+            DateTime now         = Server.Time;
+            DateTime anchorToday = now.Date.AddHours(VwapAnchorHourUtc);
+            DateTime anchorPrev  = anchorToday.AddDays(-1);
+            DateTime sessionStart = now >= anchorToday ? anchorToday : anchorPrev;
+
+            _vwapDate         = sessionStart;
+            _vwapSumPv        = 0;
+            _vwapSumV         = 0;
+            _cachedVwap       = 0;
+            _lastVwapBarTime  = DateTime.MinValue;
+
+            DateTime lastClosedBarTime = Bars.OpenTimes.Last(1);
+            int barsCounted = 0;
+
+            for (int i = 0; i < Bars.Count; i++)
+            {
+                DateTime barOpenTime = Bars.OpenTimes[i];
+                if (barOpenTime < sessionStart) continue;
+                if (barOpenTime > lastClosedBarTime) break;
+
+                double tp  = (Bars.HighPrices[i] + Bars.LowPrices[i] + Bars.ClosePrices[i]) / 3.0;
+                double vol = Math.Max(Bars.TickVolumes[i], 1);
+                _vwapSumPv      += tp * vol;
+                _vwapSumV       += vol;
+                _lastVwapBarTime = barOpenTime;
+                barsCounted++;
+            }
+
+            if (_vwapSumV > 0) _cachedVwap = _vwapSumPv / _vwapSumV;
+            Print("VWAP backfilled from {0:HH:mm}: {1} bars cumulated, vwap={2:F5}", sessionStart, barsCounted, _cachedVwap);
         }
 
         // ════════════════════════════════════════════════════════════════════
@@ -1234,9 +1798,25 @@ namespace cAlgo.Robots
             if (normalized < Symbol.VolumeInUnitsMin) return;
             if (normalized >= pos.VolumeInUnits) normalized = pos.VolumeInUnits - Symbol.VolumeInUnitsStep;
             if (normalized < Symbol.VolumeInUnitsMin) return;
+
+            // P1-3: snapshot intended exit price before partial close
+            double intendedExitPrice = pos.TradeType == TradeType.Buy ? Symbol.Bid : Symbol.Ask;
+
             var r = ClosePosition(pos, normalized);
-            if (r.IsSuccessful && Verbose)
-                Print("{0}: closed {1:F0}u remaining {2:F0}u", tag, normalized, pos.VolumeInUnits - normalized);
+            if (r.IsSuccessful)
+            {
+                // P1-1: exit slippage = intended (snapshotted before call) vs market immediately after
+                // positive value = we got a worse fill than the pre-call quote
+                if (_currentTrade != null)
+                {
+                    double exitSlip = pos.TradeType == TradeType.Buy
+                        ? (intendedExitPrice - Symbol.Bid) / Symbol.PipSize
+                        : (Symbol.Ask - intendedExitPrice) / Symbol.PipSize;
+                    _currentTrade.ExitSlippagePips += exitSlip;
+                }
+                if (Verbose)
+                    Print("{0}: closed {1:F0}u remaining {2:F0}u", tag, normalized, pos.VolumeInUnits - normalized);
+            }
         }
 
         private void ManageChandelier(Position pos)
@@ -1275,14 +1855,13 @@ namespace cAlgo.Robots
                     _currentTrade.ChandelierStop = candidate;
 
                 double desiredSl = _currentTrade.ChandelierStop;
+                // Clamp to price proximity cap instead of discarding — keeps trail moving.
+                double capSl = Symbol.Bid - CHANDELIER_SL_CAP_PIPS * Symbol.PipSize;
+                if (desiredSl >= capSl) desiredSl = capSl;
+                // Never loosen SL below current stop.
+                if (pos.StopLoss.HasValue && desiredSl <= pos.StopLoss.Value) return;
                 if (!pos.StopLoss.HasValue || desiredSl > pos.StopLoss.Value)
-                {
-                    // never loosen beyond current SL
-                    if (pos.StopLoss.HasValue && desiredSl <= pos.StopLoss.Value) return;
-                    // cap: don't pull SL beyond current price
-                    if (desiredSl >= Symbol.Bid - CHANDELIER_SL_CAP_PIPS * Symbol.PipSize) return;
                     ModifyPosition(pos, desiredSl, pos.TakeProfit);
-                }
             }
             else
             {
@@ -1291,12 +1870,13 @@ namespace cAlgo.Robots
                     _currentTrade.ChandelierStop = candidate;
 
                 double desiredSl = _currentTrade.ChandelierStop;
+                // Clamp to price proximity cap instead of discarding — keeps trail moving.
+                double capSl = Symbol.Ask + CHANDELIER_SL_CAP_PIPS * Symbol.PipSize;
+                if (desiredSl <= capSl) desiredSl = capSl;
+                // Never loosen SL above current stop.
+                if (pos.StopLoss.HasValue && desiredSl >= pos.StopLoss.Value) return;
                 if (!pos.StopLoss.HasValue || desiredSl < pos.StopLoss.Value)
-                {
-                    if (pos.StopLoss.HasValue && desiredSl >= pos.StopLoss.Value) return;
-                    if (desiredSl <= Symbol.Ask + CHANDELIER_SL_CAP_PIPS * Symbol.PipSize) return;
                     ModifyPosition(pos, desiredSl, pos.TakeProfit);
-                }
             }
         }
 
@@ -1308,30 +1888,6 @@ namespace cAlgo.Robots
             {
                 ClosePositionIfOpen("MaxHold");
             }
-        }
-
-        private double GetHighSince(DateTime since)
-        {
-            double h = double.MinValue;
-            for (int i = 1; i < Bars.Count; i++)
-            {
-                if (Bars.OpenTimes.Last(i) < since) break;
-                if (Bars.HighPrices.Last(i) > h) h = Bars.HighPrices.Last(i);
-            }
-            if (h == double.MinValue) h = Bars.HighPrices.Last(1);
-            return h;
-        }
-
-        private double GetLowSince(DateTime since)
-        {
-            double l = double.MaxValue;
-            for (int i = 1; i < Bars.Count; i++)
-            {
-                if (Bars.OpenTimes.Last(i) < since) break;
-                if (Bars.LowPrices.Last(i) < l) l = Bars.LowPrices.Last(i);
-            }
-            if (l == double.MaxValue) l = Bars.LowPrices.Last(1);
-            return l;
         }
 
         private double ComputeCurrentR(Position pos, double initialSlPips)
@@ -1352,6 +1908,69 @@ namespace cAlgo.Robots
             return barMaxPips / initialSlPips;
         }
 
+        // P0-5: most adverse bar R (negative when price moved against position)
+        private double ComputeBarMinR(Position pos, double initialSlPips)
+        {
+            if (initialSlPips <= 0) return 0;
+            double barMinPips = pos.TradeType == TradeType.Buy
+                ? (Bars.LowPrices.Last(1)  - pos.EntryPrice) / Symbol.PipSize
+                : (pos.EntryPrice - Bars.HighPrices.Last(1)) / Symbol.PipSize;
+            return barMinPips / initialSlPips;
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        //  POSITION OPENED HOOK  (P0-2: adopt limit-filled VwapMR positions)
+        // ════════════════════════════════════════════════════════════════════
+        private void OnPositionOpened(PositionOpenedEventArgs args)
+        {
+            var pos = args.Position;
+            if (pos.Label != BotLabel || pos.SymbolName != SymbolName) return;
+            if (_currentTrade != null) return;   // already tracking a position — ignore
+
+            if (_pendingVwapMrLimitMeta.HasValue
+                && !string.IsNullOrEmpty(pos.Comment)
+                && pos.Comment.Contains("|VwapMR|"))
+            {
+                var meta = _pendingVwapMrLimitMeta.Value;
+                _currentTrade = new CloverTradeState
+                {
+                    PositionId               = pos.Id,
+                    EntryPrice               = pos.EntryPrice,
+                    InitialSlPips            = meta.slPips,
+                    InitialVolumeUnits       = pos.VolumeInUnits,
+                    RRRTarget                = meta.rrr,
+                    BreakEvenDone            = false,
+                    Partial1Done             = false,
+                    Partial2Done             = false,
+                    ChandelierStop           = pos.TradeType == TradeType.Buy ? double.MinValue : double.MaxValue,
+                    EntryTime                = pos.EntryTime,
+                    Edge                     = meta.edge,
+                    Setup                    = meta.setup,
+                    EntrySlippage            = 0,          // limit fills at limit price → no slippage
+                    ExitSlippagePips         = 0,
+                    ChandelierPeakHigh       = pos.TradeType == TradeType.Buy ? pos.EntryPrice : double.MinValue,
+                    ChandelierPeakLow        = pos.TradeType == TradeType.Sell ? pos.EntryPrice : double.MaxValue,
+                    LastChandelierUpdateTime = Server.Time,
+                    EntryBarIndex            = Bars.Count - 1,
+                    MaeRMultiple             = 0,
+                    MfeRMultiple             = 0,
+                    EntrySessionKey          = GetSessionKey(pos.EntryTime),
+                    RecoveredWithoutMetadata = false,
+                };
+                _pendingVwapMrLimitMeta = null;
+                _pendingVwapMrLimit     = null;
+                _totalTradesOpened++;
+                _tradesToday++;
+                Print("LIMIT FILLED: id={0} entry={1:F5} (slip=0 by limit) edge={2} setup={3}",
+                    pos.Id, pos.EntryPrice, meta.edge, meta.setup);
+            }
+            else
+            {
+                // Unknown position opened (manual or unmatched) — delegate to recovery path
+                RecoverExistingPosition();
+            }
+        }
+
         // ════════════════════════════════════════════════════════════════════
         //  POSITION CLOSED HOOK
         // ════════════════════════════════════════════════════════════════════
@@ -1369,42 +1988,93 @@ namespace cAlgo.Robots
             CloverEdge edge = _currentTrade.Edge;
             // Use InitialVolumeUnits to avoid inflated R on partialed trades
             double rMultiple = _currentTrade.InitialSlPips > 0 ? pnl / (Symbol.PipValue * _currentTrade.InitialSlPips * _currentTrade.InitialVolumeUnits) : 0;
-            _rMultiples.Add(rMultiple);
+            if (!_currentTrade.RecoveredWithoutMetadata)
+            {
+                _rMultiples.Add(rMultiple);
+                // P0-1: aggregate into daily R-sum for correct Sharpe/Sortino annualisation
+                DateTime tradeDay = _currentTrade.EntryTime.Date;
+                if (!_dailyRSum.ContainsKey(tradeDay)) _dailyRSum[tradeDay] = 0;
+                _dailyRSum[tradeDay] += rMultiple;
+            }
 
             _dayRealizedPnl += pnl;
             _weekRealizedPnl += pnl;
 
-            if (pnl > 0)
+            // P0-4: skip edge stats for positions recovered without metadata to avoid biased attribution
+            if (_currentTrade.RecoveredWithoutMetadata)
             {
-                _edgeWinCount[edge]++;
-                _consecutiveLosses = 0;
+                Print("STATS-SKIP: recovered position {0} excluded from edge stats", pos.Id);
+                // still update consecutive loss counter for risk gates
+                if (pnl > 0) _consecutiveLosses = 0;
+                else if (pnl < 0) { _consecutiveLosses++; }
             }
-            else if (pnl < 0)
+            else
             {
-                _edgeLossCount[edge]++;
-                _consecutiveLosses++;
-                if (ConsecLossCoolDownHours > 0 && _consecutiveLosses >= ConsecLossTrigger)
+                if (pnl > 0)
                 {
-                    _cooldownEndTime = Server.Time.AddHours(ConsecLossCoolDownHours);
-                    Print("CoolDown engaged until {0:yyyy-MM-dd HH:mm} (consec losses={1})",
-                        _cooldownEndTime, _consecutiveLosses);
+                    _edgeWinCount[edge]++;
+                    _consecutiveLosses = 0;
                 }
+                else if (pnl < 0)
+                {
+                    _edgeLossCount[edge]++;
+                    _consecutiveLosses++;
+                    if (ConsecLossCoolDownHours > 0 && _consecutiveLosses >= ConsecLossTrigger)
+                    {
+                        _cooldownEndTime = Server.Time.AddHours(ConsecLossCoolDownHours);
+                        Print("CoolDown engaged until {0:yyyy-MM-dd HH:mm} (consec losses={1})",
+                            _cooldownEndTime, _consecutiveLosses);
+                    }
+                }
+                _edgePnlSum[edge] += pnl;
+                _edgeEntrySlippageSum[edge] += _currentTrade.EntrySlippage;
+                _edgeSlippageSampleCount[edge]++;
+
+                // P0-2: use entry session key (frozen at trade open), not close-time session
+                SessionKey skey = _currentTrade.EntrySessionKey;
+                if (!_sessionStats.ContainsKey(skey))
+                    _sessionStats[skey] = new SessionStats { TradeCount = 0, Wins = 0, PnLSum = 0 };
+                SessionStats stat = _sessionStats[skey];
+                stat.TradeCount++;
+                if (pnl > 0) stat.Wins++;
+                stat.PnLSum += pnl;
+                _sessionStats[skey] = stat;
+
+                // P1-1: accumulate MAE/MFE per edge
+                _edgeMaeSum[edge] += _currentTrade.MaeRMultiple;
+                _edgeMfeSum[edge] += _currentTrade.MfeRMultiple;
+
+                // P1-3: accumulate exit slippage
+                _edgeExitSlippageSum[edge]   += _currentTrade.ExitSlippagePips;
+                _edgeExitSlippageCount[edge] += 1;
             }
-            _edgePnlSum[edge] += pnl;
-            _edgeEntrySlippageSum[edge] += _currentTrade.EntrySlippage;
-            _edgeSlippageSampleCount[edge]++;
 
-            SessionKey skey = GetSessionKey(Server.Time);
-            if (!_sessionStats.ContainsKey(skey))
-                _sessionStats[skey] = new SessionStats { TradeCount = 0, Wins = 0, PnLSum = 0 };
-            SessionStats stat = _sessionStats[skey];
-            stat.TradeCount++;
-            if (pnl > 0) stat.Wins++;
-            stat.PnLSum += pnl;
-            _sessionStats[skey] = stat;
+            // P1-4: persist streak counter
+            if (PersistStreakCounter)
+                SaveStreakToStorage();
 
-            Print("CLOSED: id={0} edge={1} setup={2} pnl={3:F2} slip_entry={4:+0.0;-0.0;0.0}p dayReal={5:F2} consecLoss={6}",
-                pos.Id, edge, _currentTrade.Setup, pnl, _currentTrade.EntrySlippage, _dayRealizedPnl, _consecutiveLosses);
+            Print("CLOSED: id={0} edge={1} setup={2} pnl={3:F2} slip_entry={4:+0.0;-0.0;0.0}p slip_exit={5:+0.0;-0.0;0.0}p MAE={6:F2}R MFE={7:F2}R dayReal={8:F2} consecLoss={9}",
+                pos.Id, edge, _currentTrade.Setup, pnl,
+                _currentTrade.EntrySlippage, _currentTrade.ExitSlippagePips,
+                _currentTrade.MaeRMultiple, _currentTrade.MfeRMultiple,
+                _dayRealizedPnl, _consecutiveLosses);
+
+            // P2-1: append trade log row for CSV export
+            if (ExportTradeLogCsv)
+            {
+                SessionKey sk = _currentTrade.EntrySessionKey;
+                _tradeLogRows.Add(string.Format(CultureInfo.InvariantCulture,
+                    "{0:yyyy-MM-dd HH:mm:ss},{1:yyyy-MM-dd HH:mm:ss},{2},{3},{4},{5},{6:F5},{7:F5},{8:F1},{9:F2},{10:F0},{11:F2},{12:F4},{13:F2},{14:F2},{15:F4},{16:F4},{17},{18}",
+                    _currentTrade.EntryTime, Server.Time, SymbolName,
+                    edge, _currentTrade.Setup, pos.TradeType,
+                    _currentTrade.EntryPrice, pos.EntryPrice,
+                    _currentTrade.InitialSlPips, _currentTrade.RRRTarget,
+                    _currentTrade.InitialVolumeUnits, pnl, rMultiple,
+                    _currentTrade.EntrySlippage, _currentTrade.ExitSlippagePips,
+                    _currentTrade.MaeRMultiple, _currentTrade.MfeRMultiple,
+                    _tradeOpenRegime, SessionBucketName(sk.SessionBucket)));
+            }
+
             _currentTrade = null;
         }
 
@@ -1418,6 +2088,10 @@ namespace cAlgo.Robots
 
             if (_botDay != today)
             {
+                // P0-2: record previous day's closing balance for equity-returns Sharpe
+                if (_botDay != DateTime.MinValue)
+                    _dailyEquityClose[_botDay] = Account.Balance;
+
                 _botDay = today;
                 _dayStartBalance = Account.Balance;
                 _dayRealizedPnl = 0;
@@ -1444,6 +2118,17 @@ namespace cAlgo.Robots
                     Print("DAILY DD HIT: realized={0:F2} ({1:F2}%) >= limit {2:F2}%", _dayRealizedPnl, ddPct, MaxDailyDdPct);
                 }
             }
+            if (MaxFloatingDailyDdPct > 0 && !_dailyDdBreached)
+            {
+                double floatingDdPct = (_dayStartBalance - Account.Equity) / Math.Max(_dayStartBalance, 1) * 100.0;
+                if (floatingDdPct >= MaxFloatingDailyDdPct)
+                {
+                    _dailyDdBreached = true;
+                    ClosePositionIfOpen("FloatingDDHit");
+                    Print("FLOATING DAILY DD HIT: equity={0:F2} startBal={1:F2} dd={2:F2}% >= limit {3:F2}%",
+                        Account.Equity, _dayStartBalance, floatingDdPct, MaxFloatingDailyDdPct);
+                }
+            }
             if (MaxWeeklyDdPct > 0 && !_weeklyDdBreached)
             {
                 double ddPct = Math.Abs(_weekRealizedPnl) / Math.Max(_weekStartBalance, 1) * 100.0;
@@ -1454,12 +2139,30 @@ namespace cAlgo.Robots
                     Print("WEEKLY DD HIT: realized={0:F2} ({1:F2}%)", _weekRealizedPnl, ddPct);
                 }
             }
+
+            // P2-2: session-wide equity-curve trail-stop (HWM not reset daily)
+            if (EquityCurveTrailPct > 0 && !_dailyDdBreached && !_weeklyDdBreached)
+            {
+                if (Account.Balance > _runHighWaterMarkBalance)
+                    _runHighWaterMarkBalance = Account.Balance;
+
+                double trailDdPct = (_runHighWaterMarkBalance - Account.Balance) / Math.Max(_runHighWaterMarkBalance, 1) * 100.0;
+                if (trailDdPct >= EquityCurveTrailPct)
+                {
+                    _dailyDdBreached = true;
+                    _weeklyDdBreached = true;
+                    ClosePositionIfOpen("EquityTrailStop");
+                    Print("EQUITY CURVE TRAIL STOP: HWM={0:F2} balance={1:F2} dd={2:F2}% >= limit {3:F2}% — bot halted for session",
+                        _runHighWaterMarkBalance, Account.Balance, trailDdPct, EquityCurveTrailPct);
+                }
+            }
         }
 
         private bool WeekendClosePending()
         {
-            return Server.Time.DayOfWeek == DayOfWeek.Friday
-                && Server.Time.Hour >= WeekendCloseHour
+            DateTime t = NowUtc();
+            return t.DayOfWeek == DayOfWeek.Friday
+                && t.Hour >= WeekendCloseHour
                 && _currentTrade != null;
         }
 
@@ -1468,9 +2171,19 @@ namespace cAlgo.Robots
             if (_currentTrade == null) return;
             var pos = Positions.FindById(_currentTrade.PositionId);
             if (pos == null) { _currentTrade = null; return; }
+
+            // P1-3: snapshot intended exit price before force-close
+            double intendedExitPrice = pos.TradeType == TradeType.Buy ? Symbol.Bid : Symbol.Ask;
+
             var r = ClosePosition(pos);
             if (r.IsSuccessful)
+            {
+                double exitSlip = pos.TradeType == TradeType.Buy
+                    ? (intendedExitPrice - Symbol.Bid) / Symbol.PipSize
+                    : (Symbol.Ask - intendedExitPrice) / Symbol.PipSize;
+                if (_currentTrade != null) _currentTrade.ExitSlippagePips += exitSlip;
                 Print("FORCE CLOSE [{0}]: id={1} pnl={2:F2}", reason, pos.Id, pos.NetProfit);
+            }
         }
 
         private void RecoverExistingPosition()
@@ -1491,6 +2204,7 @@ namespace cAlgo.Robots
                 CloverEdge recoveredEdge = CloverEdge.MomoCont;
                 CloverSetup recoveredSetup = CloverSetup.Trend;
                 double recoveredRrr = RrrTrend;
+                bool recoveredWithoutMeta = true;
 
                 // Try parsing metadata from pos.Comment: format "|Edge|Setup"
                 if (!string.IsNullOrEmpty(p.Comment))
@@ -1498,45 +2212,66 @@ namespace cAlgo.Robots
                     var parts = p.Comment.Split('|');
                     if (parts.Length >= 3)
                     {
-                        if (Enum.TryParse<CloverEdge>(parts[1], out var edge))
-                            recoveredEdge = edge;
-                        if (Enum.TryParse<CloverSetup>(parts[2], out var setup))
+                        bool edgeOk = Enum.TryParse<CloverEdge>(parts[1], out var edge);
+                        bool setupOk = Enum.TryParse<CloverSetup>(parts[2], out var setup);
+                        if (edgeOk && setupOk)
                         {
+                            recoveredEdge = edge;
                             recoveredSetup = setup;
                             recoveredRrr = setup == CloverSetup.Trend ? RrrTrend
                                          : setup == CloverSetup.MeanReversion ? RrrMR
                                          : RrrBreakout;
+                            recoveredWithoutMeta = false;
                         }
                     }
                 }
+                if (recoveredWithoutMeta)
+                    Print("RECOVERY: comment parse failed for id={0} — edge stats will be excluded", p.Id);
+
+                // P0-3: resolve entry bar index from actual entry time (not current bar)
+                int recoveredEntryBarIdx = Bars.Count - 1;
+                for (int i = Bars.Count - 1; i >= 0; i--)
+                {
+                    if (Bars.OpenTimes[i] <= p.EntryTime) { recoveredEntryBarIdx = i; break; }
+                }
+                if (Verbose) Print("RECOVERY EntryBar resolved to {0} ({1:yyyy-MM-dd HH:mm})",
+                    recoveredEntryBarIdx, Bars.OpenTimes[recoveredEntryBarIdx]);
 
                 _currentTrade = new CloverTradeState
                 {
-                    PositionId = p.Id,
-                    EntryPrice = p.EntryPrice,
-                    InitialSlPips = slPips,
-                    InitialVolumeUnits = p.VolumeInUnits,
-                    RRRTarget = recoveredRrr,
-                    BreakEvenDone = p.StopLoss.HasValue && (
+                    PositionId               = p.Id,
+                    EntryPrice               = p.EntryPrice,
+                    InitialSlPips            = slPips,
+                    InitialVolumeUnits       = p.VolumeInUnits,
+                    RRRTarget                = recoveredRrr,
+                    BreakEvenDone            = p.StopLoss.HasValue && (
                         p.TradeType == TradeType.Buy
                             ? p.StopLoss.Value >= p.EntryPrice - 0.1 * Symbol.PipSize
                             : p.StopLoss.Value <= p.EntryPrice + 0.1 * Symbol.PipSize),
-                    Partial1Done = true,   // conservative: skip partials after recovery
-                    Partial2Done = true,
-                    ChandelierStop = p.TradeType == TradeType.Buy ? double.MinValue : double.MaxValue,
-                    EntryTime = p.EntryTime,
-                    Edge = recoveredEdge,
-                    Setup = recoveredSetup,
-                    ChandelierPeakHigh = p.TradeType == TradeType.Buy ? p.EntryPrice : double.MinValue,
-                    ChandelierPeakLow = p.TradeType == TradeType.Sell ? p.EntryPrice : double.MaxValue,
+                    Partial1Done             = true,
+                    Partial2Done             = true,
+                    ChandelierStop           = p.TradeType == TradeType.Buy ? double.MinValue : double.MaxValue,
+                    EntryTime                = p.EntryTime,
+                    Edge                     = recoveredEdge,
+                    Setup                    = recoveredSetup,
+                    ExitSlippagePips         = 0,
+                    ChandelierPeakHigh       = p.TradeType == TradeType.Buy ? p.EntryPrice : double.MinValue,
+                    ChandelierPeakLow        = p.TradeType == TradeType.Sell ? p.EntryPrice : double.MaxValue,
                     LastChandelierUpdateTime = Server.Time,
-                    EntryBarIndex = Bars.Count - 1
+                    EntryBarIndex            = recoveredEntryBarIdx,
+                    MaeRMultiple             = 0,
+                    MfeRMultiple             = 0,
+                    EntrySessionKey          = GetSessionKey(p.EntryTime),  // P0-2: from actual entry time
+                    RecoveredWithoutMetadata = recoveredWithoutMeta,
                 };
                 Print("RECOVERY: adopted open position id={0} {1} entry={2:F5} slPips={3:F1} edge={4} setup={5}",
                     p.Id, p.TradeType, p.EntryPrice, slPips, recoveredEdge, recoveredSetup);
                 break;
             }
         }
+
+        // P1-7: always work in UTC for time-based gates; handles brokers that serve local-time Server.Time
+        private DateTime NowUtc() => ServerTimeIsUtc ? Server.Time : Server.Time.ToUniversalTime();
 
         private static DateTime GetWeekMonday(DateTime d)
         {
@@ -1634,6 +2369,194 @@ namespace cAlgo.Robots
         {
             try { return Account.IsLive; }
             catch { return false; }
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        //  P1-4 · STREAK PERSISTENCE (LocalStorage)
+        // ════════════════════════════════════════════════════════════════════
+        private string StreakKeyLosses   => $"CloverAlgo_ConsecLoss_{BotLabel}_{SymbolName}";
+        private string StreakKeyCooldown => $"CloverAlgo_CooldownEnd_{BotLabel}_{SymbolName}";
+
+        private void LoadStreakFromStorage()
+        {
+            try
+            {
+                string rawLosses   = LocalStorage.GetString(StreakKeyLosses);
+                string rawCooldown = LocalStorage.GetString(StreakKeyCooldown);
+                if (!string.IsNullOrEmpty(rawLosses) && int.TryParse(rawLosses, out int storedLosses))
+                {
+                    _consecutiveLosses = storedLosses;
+                    if (Verbose) Print("StreakLoad: consecutiveLosses={0}", _consecutiveLosses);
+                }
+                if (!string.IsNullOrEmpty(rawCooldown) && DateTime.TryParse(rawCooldown, out DateTime storedCooldown))
+                {
+                    _cooldownEndTime = storedCooldown;
+                    if (Verbose) Print("StreakLoad: cooldownEnd={0:yyyy-MM-dd HH:mm}", _cooldownEndTime);
+                }
+            }
+            catch (Exception ex)
+            {
+                Print("StreakLoad error: {0}", ex.Message);
+            }
+        }
+
+        private void SaveStreakToStorage()
+        {
+            try
+            {
+                LocalStorage.SetString(StreakKeyLosses,   _consecutiveLosses.ToString());
+                LocalStorage.SetString(StreakKeyCooldown, _cooldownEndTime.ToString("o"));
+            }
+            catch (Exception ex)
+            {
+                Print("StreakSave error: {0}", ex.Message);
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        //  P1-5 · NEWS BLACKOUT PARSER
+        // ════════════════════════════════════════════════════════════════════
+        private void ParseNewsBlackout()
+        {
+            _newsBlackouts.Clear();
+            if (string.IsNullOrWhiteSpace(NewsBlackoutCsv)) return;
+            foreach (string entry in NewsBlackoutCsv.Split(';'))
+            {
+                string s = entry.Trim();
+                if (string.IsNullOrEmpty(s)) continue;
+                try
+                {
+                    int plusIdx = s.IndexOf('±');
+                    if (plusIdx < 0) plusIdx = s.IndexOf('+', 10);  // fallback: +minutes after datetime
+                    if (plusIdx < 0) { Print("NewsBlackout parse: no ± in '{0}', skipping", s); continue; }
+
+                    string dtPart  = s.Substring(0, plusIdx).Trim();
+                    string minPart = s.Substring(plusIdx + 1).Trim();
+
+                    if (!DateTime.TryParse(dtPart, CultureInfo.InvariantCulture,
+                        DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out DateTime center))
+                    { Print("NewsBlackout parse: bad datetime '{0}', skipping", dtPart); continue; }
+                    if (!int.TryParse(minPart, out int halfMin))
+                    { Print("NewsBlackout parse: bad minutes '{0}', skipping", minPart); continue; }
+
+                    _newsBlackouts.Add((center, halfMin));
+                    if (Verbose) Print("NewsBlackout registered: {0:yyyy-MM-dd HH:mm} ±{1}m", center, halfMin);
+                }
+                catch (Exception ex)
+                {
+                    Print("NewsBlackout parse error on '{0}': {1}", entry, ex.Message);
+                }
+            }
+            Print("NewsBlackout: {0} window(s) loaded", _newsBlackouts.Count);
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        //  v1.1 · ORB VOLUME CONFIRMATION (P1-3)
+        // ════════════════════════════════════════════════════════════════════
+        private bool IsVolumeExpanded()
+        {
+            int avail = Math.Min(OrbVolumeAvgBars, Bars.Count - 2);
+            if (avail <= 0) return true;  // not enough history → don't block
+            double sum = 0;
+            for (int i = 2; i <= avail + 1; i++)
+                sum += Bars.TickVolumes.Last(i);
+            double avg = sum / avail;
+            double current = Bars.TickVolumes.Last(1);
+            bool expanded = current >= avg * OrbVolumeMultiplier;
+            if (Verbose) Print("VolExp: tickVol={0:F0} avg={1:F0} mult={2:F1} → {3}", current, avg, OrbVolumeMultiplier, expanded ? "PASS" : "FAIL");
+            return expanded;
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        //  v1.1 · VWAP-MR LIMIT ORDER HELPER (P1-4)
+        // ════════════════════════════════════════════════════════════════════
+        private bool PlaceVwapMrLimit(TradeType dir, string reason)
+        {
+            if (_pendingVwapMrLimit != null) return false;  // already a pending order
+
+            double atrPips = GetAtrPips();
+            double slPips  = Math.Round(atrPips * AtrSlMultiplier + CommissionBufferPips, 1);
+            if (slPips < MinSlPips) slPips = MinSlPips;
+            if (slPips > MaxSlPips) slPips = MaxSlPips;
+            double tpPips  = Math.Round(slPips * RrrMR, 1);
+            double volume  = CalculateVolume(slPips, dir);
+            if (volume < Symbol.VolumeInUnitsMin) return false;
+
+            double offsetPrice = VwapMrLimitOffsetPips * Symbol.PipSize;
+            double limitPrice  = dir == TradeType.Buy
+                ? Symbol.Ask - offsetPrice
+                : Symbol.Bid + offsetPrice;
+
+            string metadata = $"|{CloverEdge.VwapMR}|{CloverSetup.MeanReversion}";
+            // Use absolute SL/TP prices (new API; pips overloads are deprecated)
+            double slAbsolute = dir == TradeType.Buy
+                ? limitPrice - slPips * Symbol.PipSize
+                : limitPrice + slPips * Symbol.PipSize;
+            double tpAbsolute = dir == TradeType.Buy
+                ? limitPrice + tpPips * Symbol.PipSize
+                : limitPrice - tpPips * Symbol.PipSize;
+            var result = PlaceLimitOrder(dir, SymbolName, volume, limitPrice, BotLabel, slAbsolute, tpAbsolute, null, metadata);
+            if (result.IsSuccessful && result.PendingOrder != null)
+            {
+                _pendingVwapMrLimit         = result.PendingOrder;
+                _pendingLimitPlacedBarIndex = Bars.Count - 1;
+                _pendingVwapMrLimitMeta     = (CloverEdge.VwapMR, CloverSetup.MeanReversion, RrrMR, slPips, Server.Time);
+                Print("LIMIT PLACED: {0} {1} @ {2:F5} sl={3:F1}p tp={4:F1}p | {5}", dir, SymbolName, limitPrice, slPips, tpPips, reason);
+                return true;
+            }
+            Print("LIMIT FAILED: {0}", result.Error);
+            return false;
+        }
+
+        private void CancelStaleLimitOrder()
+        {
+            if (_pendingVwapMrLimit == null) return;
+
+            // Check if the order was already filled or cancelled externally
+            bool stillPending = false;
+            foreach (var po in PendingOrders)
+            {
+                if (po.Id == _pendingVwapMrLimit.Id) { stillPending = true; break; }
+            }
+            if (!stillPending)
+            {
+                _pendingVwapMrLimit     = null;
+                _pendingVwapMrLimitMeta = null;
+                return;
+            }
+
+            int barsElapsed = Bars.Count - 1 - _pendingLimitPlacedBarIndex;
+            if (barsElapsed >= VwapMrLimitTimeoutBars)
+            {
+                CancelPendingOrder(_pendingVwapMrLimit);
+                Print("LIMIT CANCELLED: timeout after {0} bars", barsElapsed);
+                _pendingVwapMrLimit     = null;
+                _pendingVwapMrLimitMeta = null;
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        //  v1.1 · CSV TRADE LOG EXPORT (P2-1)
+        // ════════════════════════════════════════════════════════════════════
+        private void ExportTradeLogCsvFile()
+        {
+            if (!ExportTradeLogCsv || _tradeLogRows.Count == 0) return;
+            try
+            {
+                var sb = new StringBuilder();
+                sb.AppendLine("EntryTime,ExitTime,Symbol,Edge,Setup,Direction,EntryPrice,ExitPrice,SLPips,RRR,VolumeUnits,PnL,RMultiple,EntrySlipP,ExitSlipP,MAE_R,MFE_R,Regime,SessionBucket");
+                foreach (string row in _tradeLogRows)
+                    sb.AppendLine(row);
+
+                string filename = $"{BotLabel}.tradelog.csv";
+                string filepath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "cAlgo", "Robots", filename);
+                System.IO.File.WriteAllText(filepath, sb.ToString(), Encoding.UTF8);
+                Print("Trade log CSV saved: {0} ({1} rows)", filepath, _tradeLogRows.Count);
+            }
+            catch (Exception ex)
+            {
+                Print("ERROR exporting trade log CSV: {0}", ex.Message);
+            }
         }
 
     }
