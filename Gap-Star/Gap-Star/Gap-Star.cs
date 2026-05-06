@@ -337,6 +337,10 @@ namespace cAlgo.Robots
             DefaultValue = 4.0, MinValue = 0.0, Step = 1.0)]
         public double MaxLossPerTradeUsd { get; set; }
 
+        [Parameter("Re-Entry Cooldown Bars (after any close)", Group = "11 · Risk Gates",
+            DefaultValue = 3, MinValue = 0, MaxValue = 100)]
+        public int ReEntryCooldownBars { get; set; }
+
         // ── 12 · Sizing ──────────────────────────────────────────────────────
         [Parameter("Max Margin Utilization (%)", Group = "12 · Sizing",
             DefaultValue = 30.0, MinValue = 5.0, MaxValue = 95.0, Step = 5.0)]
@@ -387,6 +391,7 @@ namespace cAlgo.Robots
         private List<(DateTime center, int halfMinutes)> _newsBlackouts = new List<(DateTime, int)>();
         private List<string> _tradeLogRows                              = new List<string>();
         private TradeRegime  _tradeOpenRegime                           = TradeRegime.Normal;
+        private int          _lastTradeCloseBarIndex                    = -1;
 
         private Dictionary<DateTime, double> _dailyRSum        = new Dictionary<DateTime, double>();
         private Dictionary<DateTime, double> _dailyEquityClose = new Dictionary<DateTime, double>();
@@ -927,6 +932,9 @@ namespace cAlgo.Robots
             if (_weeklyDdBreached)                 return Reject("WeeklyDD hit");
             if (_tradesToday >= MaxTradesPerDay)   return Reject("MaxTradesPerDay");
             if (now < _cooldownEndTime)            return Reject("CoolDown");
+            if (ReEntryCooldownBars > 0 && _lastTradeCloseBarIndex >= 0
+                && (Bars.Count - 1 - _lastTradeCloseBarIndex) < ReEntryCooldownBars)
+                return Reject($"ReEntryCooldown {Bars.Count - 1 - _lastTradeCloseBarIndex}/{ReEntryCooldownBars}b");
 
             foreach (var (center, halfMin) in _newsBlackouts)
                 if (Math.Abs((now - center).TotalMinutes) <= halfMin)
@@ -1400,6 +1408,7 @@ namespace cAlgo.Robots
                     _currentTrade.FvgTargetPrice));
             }
 
+            _lastTradeCloseBarIndex = Bars.Count - 1;
             _currentTrade = null;
         }
 
