@@ -192,7 +192,8 @@ namespace cAlgo.Robots
             DefaultValue = 14, MinValue = 3, MaxValue = 100)]
         public int AtrPeriod { get; set; }
 
-        [Parameter("Block Entries in HighVol Regime", Group = "04 · Volatility", DefaultValue = true)]
+        [Parameter("Block Entries in HighVol Regime (default OFF — mean-reversion typically benefits from HighVol)",
+            Group = "04 · Volatility", DefaultValue = false)]
         public bool BlockHighVol { get; set; }
 
         [Parameter("Daily ATR Ratio LOW", Group = "04 · Volatility",
