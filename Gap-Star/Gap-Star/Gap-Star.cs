@@ -152,6 +152,9 @@ namespace cAlgo.Robots
         [Parameter("Allow Short Entries", Group = "01 · RSI Signal", DefaultValue = true)]
         public bool AllowShorts { get; set; }
 
+        [Parameter("FVG Role", Group = "01 · RSI Signal", DefaultValue = FvgRoleMode.TargetMode)]
+        public FvgRoleMode FvgRole { get; set; }
+
         // ── 02 · Time & Session ──────────────────────────────────────────────
         [Parameter("Session Start Hour (server UTC)", Group = "02 · Time & Session",
             DefaultValue = 7, MinValue = 0, MaxValue = 23)]
@@ -360,6 +363,7 @@ namespace cAlgo.Robots
         public string ParameterSetId { get; set; }
 
         public enum FvgTargetMode { NearEdge, Midpoint, FarEdge }
+        public enum FvgRoleMode   { TargetMode, EntryZoneMode }
 
         // ════════════════════════════════════════════════════════════════════
         //  PRIVATE STATE
@@ -620,7 +624,10 @@ namespace cAlgo.Robots
                 ? (rsiPrev >= RsiOverboughtLevel && rsiNow < RsiOverboughtLevel)
                 : (rsiNow >= RsiOverboughtLevel);
 
-            // Long path
+            if (FvgRole == FvgRoleMode.EntryZoneMode)
+                return TryEnterRsiFvgEntryZone(rsiNow, rsiPrev, oversoldSig, overboughtSig, htfBias);
+
+            // Long path  (TargetMode — original behaviour)
             if (AllowLongs && oversoldSig)
             {
                 if (EnableHtfBiasFilter && htfBias < 0)
@@ -634,7 +641,7 @@ namespace cAlgo.Robots
                     $"RSI oversold rsi={rsiNow:F1} (prev={rsiPrev:F1})");
             }
 
-            // Short path
+            // Short path  (TargetMode)
             if (AllowShorts && overboughtSig)
             {
                 if (EnableHtfBiasFilter && htfBias > 0)
@@ -648,6 +655,79 @@ namespace cAlgo.Robots
                     $"RSI overbought rsi={rsiNow:F1} (prev={rsiPrev:F1})");
             }
 
+            return false;
+        }
+
+        private bool TryEnterRsiFvgEntryZone(double rsiNow, double rsiPrev,
+            bool oversoldSig, bool overboughtSig, int htfBias)
+        {
+            const int TouchLookback = 3;
+
+            if (AllowLongs && oversoldSig)
+            {
+                if (EnableHtfBiasFilter && htfBias < 0)
+                    return Reject($"HTF bias bearish (rsi={rsiNow:F1})");
+
+                double entryRef = Symbol.Ask;
+                if (!IsPriceInOrNearFvg(true, entryRef, TouchLookback))
+                    return Reject($"EntryZone: no bullish FVG touch near {entryRef:F5}");
+
+                double atrPips = GetAtrPips();
+                double slPips  = Math.Round(atrPips * AtrSlMultiplier + CommissionBufferPips, 1);
+                if (slPips < MinSlPips) slPips = MinSlPips;
+                if (slPips > MaxSlPips) slPips = MaxSlPips;
+                double rr      = FallbackRrr > 0 ? FallbackRrr : 2.0;
+                double tpPips  = Math.Round(slPips * rr, 1);
+
+                return OpenTradeRaw(TradeType.Buy, "RsiFvgEntry", TradeSetupKind.MeanReversion,
+                    slPips, tpPips, double.NaN,
+                    $"EntryZone long rsi={rsiNow:F1} (prev={rsiPrev:F1}) rr={rr:F1}");
+            }
+
+            if (AllowShorts && overboughtSig)
+            {
+                if (EnableHtfBiasFilter && htfBias > 0)
+                    return Reject($"HTF bias bullish (rsi={rsiNow:F1})");
+
+                double entryRef = Symbol.Bid;
+                if (!IsPriceInOrNearFvg(false, entryRef, TouchLookback))
+                    return Reject($"EntryZone: no bearish FVG touch near {entryRef:F5}");
+
+                double atrPips = GetAtrPips();
+                double slPips  = Math.Round(atrPips * AtrSlMultiplier + CommissionBufferPips, 1);
+                if (slPips < MinSlPips) slPips = MinSlPips;
+                if (slPips > MaxSlPips) slPips = MaxSlPips;
+                double rr      = FallbackRrr > 0 ? FallbackRrr : 2.0;
+                double tpPips  = Math.Round(slPips * rr, 1);
+
+                return OpenTradeRaw(TradeType.Sell, "RsiFvgEntry", TradeSetupKind.MeanReversion,
+                    slPips, tpPips, double.NaN,
+                    $"EntryZone short rsi={rsiNow:F1} (prev={rsiPrev:F1}) rr={rr:F1}");
+            }
+
+            return false;
+        }
+
+        private bool IsPriceInOrNearFvg(bool wantBullish, double refPrice, int touchLookbackBars)
+        {
+            int currentBarIdx = Bars.Count - 1;
+            foreach (var z in _fvgs)
+            {
+                if (z.Filled) continue;
+                if (z.IsBullish != wantBullish) continue;
+
+                // Check current bar is inside the zone
+                if (refPrice >= z.Bottom && refPrice <= z.Top) return true;
+
+                // Check any of the last N bars touched the zone
+                for (int back = 1; back <= touchLookbackBars; back++)
+                {
+                    if (back >= Bars.Count) break;
+                    double barHigh = Bars.HighPrices.Last(back);
+                    double barLow  = Bars.LowPrices.Last(back);
+                    if (barLow <= z.Top && barHigh >= z.Bottom) return true;
+                }
+            }
             return false;
         }
 
