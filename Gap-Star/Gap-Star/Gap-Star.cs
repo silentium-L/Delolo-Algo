@@ -82,6 +82,7 @@ namespace cAlgo.Robots
         public SessionKey      EntrySessionKey;
         public bool            RecoveredWithoutMetadata;
         public double          FvgTargetPrice;
+        public string          ExitReason;
     }
 
     [Robot("Gap-Star", AccessRights = AccessRights.None)]
@@ -417,6 +418,7 @@ namespace cAlgo.Robots
         private Dictionary<string, double> _edgeMfeSum              = new Dictionary<string, double>();
         private Dictionary<SessionKey, SessionStats> _sessionStats  = new Dictionary<SessionKey, SessionStats>();
         private List<double> _rMultiples = new List<double>();
+        private List<(string edge, double rrr, double r, string exitReason)> _tradeOutcomes = new List<(string, double, double, string)>();
 
         // ════════════════════════════════════════════════════════════════════
         //  ON START
@@ -1488,6 +1490,37 @@ namespace cAlgo.Robots
                     _currentTrade.FvgTargetPrice));
             }
 
+            // Classify exit reason
+            if (!_currentTrade.RecoveredWithoutMetadata)
+            {
+                string exitReason;
+                double fvgTgt = _currentTrade.FvgTargetPrice;
+                bool   hasFvgTgt = !double.IsNaN(fvgTgt);
+                if (pnl > 0 && hasFvgTgt)
+                {
+                    double tol = Symbol.PipSize;
+                    bool hitFvg = pos.TradeType == TradeType.Buy
+                        ? Symbol.Bid >= fvgTgt - tol
+                        : Symbol.Ask <= fvgTgt + tol;
+                    exitReason = hitFvg ? "FVG-TP" : "Mgmt";
+                }
+                else if (pnl < 0 && pos.StopLoss.HasValue)
+                {
+                    double sl  = pos.StopLoss.Value;
+                    double tol = 0.5 * Symbol.PipSize;
+                    bool hitSl = pos.TradeType == TradeType.Buy
+                        ? Symbol.Bid <= sl + tol
+                        : Symbol.Ask >= sl - tol;
+                    exitReason = hitSl ? "SL" : "Mgmt";
+                }
+                else
+                {
+                    exitReason = "Mgmt";
+                }
+                _currentTrade.ExitReason = exitReason;
+                _tradeOutcomes.Add((edgeLabel, _currentTrade.RRRTarget, rMultiple, exitReason));
+            }
+
             _lastTradeCloseBarIndex = Bars.Count - 1;
             _currentTrade = null;
         }
@@ -1780,6 +1813,42 @@ namespace cAlgo.Robots
                     Print("  Sharpe=N/A (sample {0}d < 30) MaxDD={1:F2}R PF={2:F2}", _dailyRSum.Count, maxDdR, pf);
                 }
                 Print("  GrossWin={0:F2}R  GrossLoss={1:F2}R", grossWin, grossLoss);
+            }
+
+            if (_tradeOutcomes.Count > 0)
+            {
+                Print("── RRR Buckets per Edge ─────────────────────────");
+                foreach (var edge in _tradeOutcomes.Select(t => t.edge).Distinct().OrderBy(e => e))
+                {
+                    var trades = _tradeOutcomes.Where(t => t.edge == edge).ToList();
+                    int   n    = trades.Count;
+                    void PrintBucket(string label, IList<(string e, double rrr, double r, string ex)> bucket)
+                    {
+                        if (bucket.Count == 0) return;
+                        int    bw  = bucket.Count(t => t.r > 0);
+                        double avg = bucket.Average(t => t.r);
+                        Print("    {0,-8} n={1} wr={2:P0} avgR={3:+0.00;-0.00;0.00}", label, bucket.Count, (double)bw / bucket.Count, avg);
+                    }
+                    Print("  {0,-12} n={1}", edge, n);
+                    PrintBucket("<2.0R",  trades.Where(t => t.rrr <  2.0).ToList());
+                    PrintBucket("2-3R",   trades.Where(t => t.rrr >= 2.0 && t.rrr < 3.0).ToList());
+                    PrintBucket("3R+",    trades.Where(t => t.rrr >= 3.0).ToList());
+                }
+
+                Print("── Exit Reason per Edge ─────────────────────────");
+                foreach (var edge in _tradeOutcomes.Select(t => t.edge).Distinct().OrderBy(e => e))
+                {
+                    var trades = _tradeOutcomes.Where(t => t.edge == edge).ToList();
+                    int n      = trades.Count;
+                    int fvgTp  = trades.Count(t => t.exitReason == "FVG-TP");
+                    int sl     = trades.Count(t => t.exitReason == "SL");
+                    int mgmt   = trades.Count(t => t.exitReason == "Mgmt");
+                    Print("  {0,-12} n={1} | FVG-TP: {2} ({3:P0}) | SL: {4} ({5:P0}) | Mgmt: {6} ({7:P0})",
+                        edge, n,
+                        fvgTp, (double)fvgTp / n,
+                        sl,    (double)sl    / n,
+                        mgmt,  (double)mgmt  / n);
+                }
             }
 
             Print("── MAE / MFE per Edge ───────────────────────────");
