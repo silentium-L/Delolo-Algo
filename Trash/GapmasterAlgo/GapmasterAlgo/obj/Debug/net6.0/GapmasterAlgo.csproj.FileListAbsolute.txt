@@ -1,0 +1,13 @@
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\GapmasterAlgo\GapmasterAlgo\obj\Debug\net6.0\GapmasterAlgo.csproj.AssemblyReference.cache
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\GapmasterAlgo\GapmasterAlgo\obj\Debug\net6.0\GapmasterAlgo.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\GapmasterAlgo\GapmasterAlgo\obj\Debug\net6.0\GapmasterAlgo.AssemblyInfoInputs.cache
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\GapmasterAlgo\GapmasterAlgo\obj\Debug\net6.0\GapmasterAlgo.AssemblyInfo.cs
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\GapmasterAlgo\GapmasterAlgo\obj\Debug\net6.0\GapmasterAlgo.csproj.CoreCompileInputs.cache
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\GapmasterAlgo\GapmasterAlgo\obj\Debug\net6.0\GapmasterAlgo.sourcelink.json
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\GapmasterAlgo\GapmasterAlgo\bin\Debug\net6.0\GapmasterAlgo.deps.json
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\GapmasterAlgo\GapmasterAlgo\bin\Debug\net6.0\GapmasterAlgo.dll
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\GapmasterAlgo\GapmasterAlgo\bin\Debug\net6.0\GapmasterAlgo.pdb
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\GapmasterAlgo\GapmasterAlgo\obj\Debug\net6.0\GapmasterAlgo.dll
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\GapmasterAlgo\GapmasterAlgo\obj\Debug\net6.0\refint\GapmasterAlgo.dll
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\GapmasterAlgo\GapmasterAlgo\obj\Debug\net6.0\GapmasterAlgo.pdb
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\GapmasterAlgo\GapmasterAlgo\obj\Debug\net6.0\ref\GapmasterAlgo.dll

@@ -1,0 +1,13 @@
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\Gap-Star\Gap-Star\obj\Debug\net6.0\Gap-Star.csproj.AssemblyReference.cache
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\Gap-Star\Gap-Star\obj\Debug\net6.0\Gap-Star.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\Gap-Star\Gap-Star\obj\Debug\net6.0\Gap-Star.AssemblyInfoInputs.cache
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\Gap-Star\Gap-Star\obj\Debug\net6.0\Gap-Star.AssemblyInfo.cs
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\Gap-Star\Gap-Star\obj\Debug\net6.0\Gap-Star.csproj.CoreCompileInputs.cache
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\Gap-Star\Gap-Star\obj\Debug\net6.0\Gap-Star.sourcelink.json
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\Gap-Star\Gap-Star\bin\Debug\net6.0\Gap-Star.deps.json
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\Gap-Star\Gap-Star\bin\Debug\net6.0\Gap-Star.dll
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\Gap-Star\Gap-Star\bin\Debug\net6.0\Gap-Star.pdb
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\Gap-Star\Gap-Star\obj\Debug\net6.0\Gap-Star.dll
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\Gap-Star\Gap-Star\obj\Debug\net6.0\refint\Gap-Star.dll
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\Gap-Star\Gap-Star\obj\Debug\net6.0\Gap-Star.pdb
+C:\Users\ldenn\Documents\cAlgo\Sources\Robots\Gap-Star\Gap-Star\obj\Debug\net6.0\ref\Gap-Star.dll
