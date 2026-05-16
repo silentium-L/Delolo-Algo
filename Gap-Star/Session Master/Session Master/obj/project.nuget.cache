@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "dgSpecHash": "jzshSUtnLlYF6+LAFwRswz061toH+BQp5aXayxl5dvvWOTCZu5wbaj6dQklStmp51AQLFIW1nciw6Hmgru1NJw==",
+  "success": true,
+  "projectFilePath": "C:\\Users\\ldenn\\Documents\\cAlgo\\Sources\\Robots\\Gap-Star\\Session Master\\Session Master\\Session Master.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\ldenn\\.nuget\\packages\\ctrader.automate\\1.0.17\\ctrader.automate.1.0.17.nupkg.sha512",
+    "C:\\Users\\ldenn\\.nuget\\packages\\microsoft.netcore.app.ref\\6.0.25\\microsoft.netcore.app.ref.6.0.25.nupkg.sha512",
+    "C:\\Users\\ldenn\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\6.0.25\\microsoft.windowsdesktop.app.ref.6.0.25.nupkg.sha512",
+    "C:\\Users\\ldenn\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\6.0.25\\microsoft.aspnetcore.app.ref.6.0.25.nupkg.sha512"
+  ],
+  "logs": []
+}

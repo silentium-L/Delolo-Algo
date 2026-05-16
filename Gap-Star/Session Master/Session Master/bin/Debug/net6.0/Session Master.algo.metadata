@@ -1,0 +1,162 @@
+[
+  {
+    "Flags": "Indicator",
+    "Guid": "00000000-0000-0000-0000-000000000000",
+    "Group": "Custom",
+    "FriendlyName": "SessionAndLiquidityLevelsUTC",
+    "ShortName": null,
+    "TypeName": "cAlgo.Indicators.SessionAndLiquidityLevelsUTC",
+    "AssemblyName": "Session Master, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null",
+    "TimeZone": "UTC",
+    "IsOverlay": true,
+    "IsPercentage": false,
+    "ScalePrecision": null,
+    "Levels": [],
+    "DefaultSymbolName": null,
+    "DefaultTimeFrame": null,
+    "Video": null,
+    "Lines": [
+      {
+        "Name": "Current Session",
+        "Style": "Solid",
+        "PlotType": "Line",
+        "Thickness": 1.0,
+        "Color": "#FFFFFF00",
+        "PropertyName": "CurrentSessionOut",
+        "IsUsedInAutoScale": false,
+        "IsColorCustomizable": true,
+        "IsLastValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "Name": "Session High",
+        "Style": "Solid",
+        "PlotType": "Line",
+        "Thickness": 1.0,
+        "Color": "#FFFFFF00",
+        "PropertyName": "SessionHighOut",
+        "IsUsedInAutoScale": false,
+        "IsColorCustomizable": true,
+        "IsLastValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "Name": "Session Low",
+        "Style": "Solid",
+        "PlotType": "Line",
+        "Thickness": 1.0,
+        "Color": "#FFFFFF00",
+        "PropertyName": "SessionLowOut",
+        "IsUsedInAutoScale": false,
+        "IsColorCustomizable": true,
+        "IsLastValueVisibleInTitle": true,
+        "Description": ""
+      }
+    ],
+    "Clouds": [],
+    "Parameters": [
+      {
+        "DefaultValue": "01:00",
+        "ParameterType": "String",
+        "PropertyName": "HkStartUTC",
+        "FriendlyName": "HK Start (UTC)",
+        "GroupName": "Hong Kong Session",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": "09:00",
+        "ParameterType": "String",
+        "PropertyName": "HkEndUTC",
+        "FriendlyName": "HK End (UTC)",
+        "GroupName": "Hong Kong Session",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": "08:00",
+        "ParameterType": "String",
+        "PropertyName": "LonStartUTC",
+        "FriendlyName": "London Start (UTC)",
+        "GroupName": "London Session",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": "16:00",
+        "ParameterType": "String",
+        "PropertyName": "LonEndUTC",
+        "FriendlyName": "London End (UTC)",
+        "GroupName": "London Session",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": "13:00",
+        "ParameterType": "String",
+        "PropertyName": "NyStartUTC",
+        "FriendlyName": "NY Start (UTC)",
+        "GroupName": "New York Session",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": "21:00",
+        "ParameterType": "String",
+        "PropertyName": "NyEndUTC",
+        "FriendlyName": "NY End (UTC)",
+        "GroupName": "New York Session",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 5,
+        "MaxValue": 100,
+        "Step": 1,
+        "DefaultValue": 30,
+        "ParameterType": "Integer",
+        "PropertyName": "Opacity",
+        "FriendlyName": "Box Opacity",
+        "GroupName": "Display",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": true,
+        "ParameterType": "Boolean",
+        "PropertyName": "ShowDailyWeeklyHighs",
+        "FriendlyName": "Show Yesterday/Last Week Highs",
+        "GroupName": "Display",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      }
+    ],
+    "Capabilities": [],
+    "CustomAttributes": [
+      {
+        "TypeFullName": "System.Runtime.CompilerServices.NullableContextAttribute",
+        "CtorArguments": [
+          {
+            "TypeFullName": "System.Byte",
+            "Value": 1
+          }
+        ],
+        "NamedArguments": []
+      },
+      {
+        "TypeFullName": "System.Runtime.CompilerServices.NullableAttribute",
+        "CtorArguments": [
+          {
+            "TypeFullName": "System.Byte",
+            "Value": 0
+          }
+        ],
+        "NamedArguments": []
+      }
+    ],
+    "Sets": [],
+    "AddIndicatorsToChart": false,
+    "AdditionalInfoUrl": null,
+    "Bars": []
+  }
+]

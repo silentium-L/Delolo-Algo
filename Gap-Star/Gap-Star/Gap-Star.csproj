@@ -2,8 +2,13 @@
   <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
   </PropertyGroup>
-
   <ItemGroup>
     <PackageReference Include="cTrader.Automate" Version="*" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Regime Master\Regime Master\Regime Master.csproj" />
+    <ProjectReference Include="..\Session Master\Session Master\Session Master.csproj" />
+    <ProjectReference Include="..\Gap Master\Gap Master\Gap Master.csproj" />
+    <ProjectReference Include="..\RSI Master\RSI Master\RSI Master.csproj" />
   </ItemGroup>
 </Project>

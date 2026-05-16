@@ -13,9 +13,10 @@ namespace cAlgo.Indicators
     {
         #region Constants
 
-        private const int    LiveBarBoxExtension  = 5;
+        private const int    LiveBarBoxExtension   = 5;
         private const int    DefaultProjectionBars = 50;
         private const double MaxProbability        = 0.99;
+        private const double MitigationEpsilon     = 1e-9;
 
         #endregion
 
@@ -36,11 +37,17 @@ namespace cAlgo.Indicators
         [Parameter("Fill Window (Bars)", DefaultValue = 200, MinValue = 10, Group = "General")]
         public int FillWindow { get; set; }
 
+        [Parameter("Fill Threshold (Mitigation %)", DefaultValue = 0.5, MinValue = 0.1, MaxValue = 1.0, Step = 0.05, Group = "General")]
+        public double FillThresholdPct { get; set; }
+
         [Parameter("Top N Projections", DefaultValue = 3, MinValue = 1, MaxValue = 10, Group = "Display")]
         public int TopN { get; set; }
 
         [Parameter("Show Filled Gaps", DefaultValue = true, Group = "Display")]
         public bool ShowFilled { get; set; }
+
+        [Parameter("Show Gap Labels", DefaultValue = true, Group = "Display")]
+        public bool ShowLabels { get; set; }
 
         [Parameter("Show Weekend Gaps", DefaultValue = true, Group = "Gap Types")]
         public bool ShowWeekend { get; set; }
@@ -78,6 +85,9 @@ namespace cAlgo.Indicators
         [Parameter("Age Decay (Bars)", DefaultValue = 500, MinValue = 50, Group = "Probability")]
         public int AgeDecay { get; set; }
 
+        [Parameter("Mitigation Boost", DefaultValue = 0.5, MinValue = 0.0, MaxValue = 1.5, Step = 0.1, Group = "Probability")]
+        public double MitigationBoost { get; set; }
+
         #endregion
 
         #region Outputs
@@ -111,9 +121,9 @@ namespace cAlgo.Indicators
 
         #region Fields
 
-        private AverageTrueRange        _atr   = null!;
+        private AverageTrueRange         _atr   = null!;
         private ExponentialMovingAverage _ema50 = null!;
-        private FillStatistics          _stats  = null!;
+        private FillStatistics           _stats  = null!;
         private bool _initialized       = false;
         private int  _tentativeBarIndex = -1;
 
@@ -123,12 +133,12 @@ namespace cAlgo.Indicators
         private HashSet<int> _sessionHours = new HashSet<int>();
 
         private readonly HashSet<string> _renderedBoxIds        = new HashSet<string>();
+        private readonly HashSet<string> _renderedLabelIds      = new HashSet<string>();
         private readonly HashSet<string> _renderedProjIds       = new HashSet<string>();
         private readonly List<Gap>       _tentativeGaps         = new List<Gap>();
         private readonly List<Gap>       _tentativelyFilledGaps = new List<Gap>();
 
-        private readonly Dictionary<string, (int endIdx, bool isFilled)> _boxCache
-            = new Dictionary<string, (int, bool)>();
+        private readonly Dictionary<string, BoxState> _boxCache = new Dictionary<string, BoxState>();
 
         private static readonly IReadOnlyDictionary<GapType, Color> TypeColors =
             new Dictionary<GapType, Color>
@@ -139,6 +149,21 @@ namespace cAlgo.Indicators
                 { GapType.FVG,       Color.FromHex("#FF3399FF") },
                 { GapType.Liquidity, Color.FromHex("#FF888888") }
             };
+
+        private readonly struct BoxState
+        {
+            public readonly int    EndIdx;
+            public readonly bool   IsFilled;
+            public readonly double DrawTop;
+            public readonly double DrawBottom;
+            public BoxState(int endIdx, bool isFilled, double drawTop, double drawBottom)
+            {
+                EndIdx     = endIdx;
+                IsFilled   = isFilled;
+                DrawTop    = drawTop;
+                DrawBottom = drawBottom;
+            }
+        }
 
         #endregion
 
@@ -228,7 +253,10 @@ namespace cAlgo.Indicators
             RecalculateProbabilities(upToIndex);
 
             foreach (var gap in AllGaps)
+            {
                 DrawGapBox(gap, upToIndex);
+                DrawGapLabel(gap);
+            }
 
             var topProjections = ActiveGaps
                 .OrderByDescending(g => g.HitProbability)
@@ -275,7 +303,9 @@ namespace cAlgo.Indicators
                 var gap = _tentativelyFilledGaps[i];
                 gap.IsFilledTentative = false;
 
-                if (IsGapFilled(gap, barIndex))
+                MitigateGap(gap, barIndex);
+
+                if (IsGapFilled(gap))
                 {
                     gap.IsFilled       = true;
                     gap.FilledBarIndex = barIndex;
@@ -290,25 +320,44 @@ namespace cAlgo.Indicators
         private bool IsGapStillValidAtClose(Gap gap, int barIndex)
         {
             if (barIndex < 0 || barIndex >= Bars.Count) return true;
-            double mid = (gap.Top + gap.Bottom) / 2.0;
-            return !(Bars.LowPrices[barIndex] <= mid && Bars.HighPrices[barIndex] >= mid);
+
+            // FVGs: the 3-bar pattern itself must still hold at bar close.
+            // Bar1 displacement could have widened the creation bar's range and collapsed the gap.
+            if (gap.Type == GapType.FVG && barIndex >= 2)
+            {
+                if (gap.FillsFromAbove)
+                    return Bars.HighPrices[barIndex - 2] < Bars.LowPrices[barIndex];
+                return Bars.LowPrices[barIndex - 2] > Bars.HighPrices[barIndex];
+            }
+
+            // News / Session / Weekend / Liquidity: invalidate if the creation bar's range
+            // already covers the original midpoint (gap was instantly mitigated).
+            return !(Bars.LowPrices[barIndex] <= gap.OriginalMid &&
+                     Bars.HighPrices[barIndex] >= gap.OriginalMid);
         }
 
         private void RemoveGapChartObjects(Gap gap)
         {
             if (Chart == null) return;
 
-            string boxId  = $"gap_{gap.Type}_{gap.CreatedBarIndex}";
-            string projId = $"proj_{gap.Type}_{gap.CreatedBarIndex}";
+            string boxId   = BoxId(gap);
+            string labelId = LabelId(gap);
+            string projId  = ProjId(gap);
 
             Chart.RemoveObject(boxId);
+            Chart.RemoveObject(labelId);
             Chart.RemoveObject(projId);
             Chart.RemoveObject(projId + "_lbl");
 
             _renderedBoxIds.Remove(boxId);
+            _renderedLabelIds.Remove(labelId);
             _renderedProjIds.Remove(projId);
             _boxCache.Remove(boxId);
         }
+
+        private static string BoxId(Gap gap)   => $"gap_{gap.Type}_{gap.CreatedBarIndex}";
+        private static string LabelId(Gap gap) => $"lbl_{gap.Type}_{gap.CreatedBarIndex}";
+        private static string ProjId(Gap gap)  => $"proj_{gap.Type}_{gap.CreatedBarIndex}";
 
         #endregion
 
@@ -329,7 +378,8 @@ namespace cAlgo.Indicators
                     for (int j = gap.CreatedBarIndex + 1; j <= checkUntil; j++)
                     {
                         if (j >= Bars.Count) break;
-                        if (IsGapFilled(gap, j))
+                        MitigateGap(gap, j);
+                        if (IsGapFilled(gap))
                         {
                             gap.FilledBarIndex = j;
                             gap.IsFilled       = true;
@@ -406,15 +456,26 @@ namespace cAlgo.Indicators
         private Gap? CreateAndAddGap(GapType type, double open, double prevClose,
             double gapSize, double atrVal, int index, bool addToActive, bool isLiveBar)
         {
+            double top    = Math.Max(open, prevClose);
+            double bottom = Math.Min(open, prevClose);
+            var direction = open > prevClose ? GapDirection.Up : GapDirection.Down;
+
+            // For price-discontinuity gaps (News/Session/Weekend/Liquidity), an UP gap
+            // (open > prevClose) leaves price *above* the gap zone — fill comes from above.
+            bool fillsFromAbove = direction == GapDirection.Up;
+
             var gap = new Gap
             {
                 Type            = type,
-                Top             = Math.Max(open, prevClose),
-                Bottom          = Math.Min(open, prevClose),
+                OriginalTop     = top,
+                OriginalBottom  = bottom,
+                CurrentTop      = top,
+                CurrentBottom   = bottom,
+                FillsFromAbove  = fillsFromAbove,
                 CreatedBarIndex = index,
                 CreatedTime     = Bars.OpenTimes[index],
                 SizeInAtr       = gapSize / atrVal,
-                Direction       = open > prevClose ? GapDirection.Up : GapDirection.Down,
+                Direction       = direction,
                 IsConfirmed     = !isLiveBar
             };
             return AddGap(gap, addToActive, isLiveBar) ? gap : null;
@@ -427,39 +488,49 @@ namespace cAlgo.Indicators
             double bar2Low  = Bars.LowPrices[index - 2];
             double bar2High = Bars.HighPrices[index - 2];
 
-            // FIX: midBarOverlap-Check entfernt — war auf M5 zu restriktiv
-            // FIX: FVG nutzt halbe minSize als Schwellwert
+            // FVG threshold is half of the regular minSize: FVGs are typically tighter than
+            // session/news gaps but still meaningful for ICT-style reactions.
             double fvgMinSize = minSize * 0.5;
 
-            if (bar2Low > bar0High)
-            {
-                double fvgSize = bar2Low - bar0High;
-                if (fvgSize >= fvgMinSize)
-                    AddGap(new Gap
-                    {
-                        Type            = GapType.FVG,
-                        Top             = bar2Low,
-                        Bottom          = bar0High,
-                        CreatedBarIndex = index,
-                        CreatedTime     = Bars.OpenTimes[index],
-                        SizeInAtr       = fvgSize / atrVal,
-                        Direction       = GapDirection.Up,
-                        IsConfirmed     = !isLiveBar
-                    }, addToActive, isLiveBar);
-            }
-            else if (bar2High < bar0Low)
+            // Bullish FVG: price displaced *up* from bar2 to bar0. Gap sits above bar0;
+            // fill requires price to rise back into it -> approaches from below.
+            if (bar2High < bar0Low)
             {
                 double fvgSize = bar0Low - bar2High;
                 if (fvgSize >= fvgMinSize)
                     AddGap(new Gap
                     {
                         Type            = GapType.FVG,
-                        Top             = bar0Low,
-                        Bottom          = bar2High,
+                        OriginalTop     = bar0Low,
+                        OriginalBottom  = bar2High,
+                        CurrentTop      = bar0Low,
+                        CurrentBottom   = bar2High,
+                        FillsFromAbove  = true,  // gap below price -> mitigation comes from above
                         CreatedBarIndex = index,
                         CreatedTime     = Bars.OpenTimes[index],
                         SizeInAtr       = fvgSize / atrVal,
-                        Direction       = GapDirection.Down,
+                        Direction       = GapDirection.Down, // direction = where price moved to *form* the gap
+                        IsConfirmed     = !isLiveBar
+                    }, addToActive, isLiveBar);
+            }
+            // Bearish FVG: price displaced *down* from bar2 to bar0. Gap sits below bar2;
+            // fill requires price to drop back into it -> approaches from above.
+            else if (bar2Low > bar0High)
+            {
+                double fvgSize = bar2Low - bar0High;
+                if (fvgSize >= fvgMinSize)
+                    AddGap(new Gap
+                    {
+                        Type            = GapType.FVG,
+                        OriginalTop     = bar2Low,
+                        OriginalBottom  = bar0High,
+                        CurrentTop      = bar2Low,
+                        CurrentBottom   = bar0High,
+                        FillsFromAbove  = false, // gap above price -> mitigation comes from below
+                        CreatedBarIndex = index,
+                        CreatedTime     = Bars.OpenTimes[index],
+                        SizeInAtr       = fvgSize / atrVal,
+                        Direction       = GapDirection.Up,
                         IsConfirmed     = !isLiveBar
                     }, addToActive, isLiveBar);
             }
@@ -494,13 +565,51 @@ namespace cAlgo.Indicators
 
         #endregion
 
-        #region Fill Check
+        #region Mitigation & Fill
 
-        private bool IsGapFilled(Gap gap, int atIndex)
+        // Shrinks CurrentTop or CurrentBottom monotonically based on a wick from the
+        // approach side. Re-applying with the same or weaker wick is a no-op.
+        private void MitigateGap(Gap gap, int barIndex)
         {
-            if (atIndex < 0 || atIndex >= Bars.Count) return false;
-            double mid = (gap.Top + gap.Bottom) / 2.0;
-            return Bars.LowPrices[atIndex] <= mid && Bars.HighPrices[atIndex] >= mid;
+            if (gap.IsFilled || gap.IsAgedOut) return;
+            if (barIndex <= gap.CreatedBarIndex) return;
+            if (barIndex < 0 || barIndex >= Bars.Count) return;
+
+            double high = Bars.HighPrices[barIndex];
+            double low  = Bars.LowPrices[barIndex];
+
+            if (gap.FillsFromAbove)
+            {
+                // Wick from above eats the top edge downward.
+                if (low < gap.CurrentTop)
+                {
+                    double newTop = Math.Max(low, gap.CurrentBottom);
+                    if (newTop < gap.CurrentTop)
+                    {
+                        gap.CurrentTop            = newTop;
+                        gap.LastMitigatedBarIndex = barIndex;
+                    }
+                }
+            }
+            else
+            {
+                // Wick from below eats the bottom edge upward.
+                if (high > gap.CurrentBottom)
+                {
+                    double newBottom = Math.Min(high, gap.CurrentTop);
+                    if (newBottom > gap.CurrentBottom)
+                    {
+                        gap.CurrentBottom         = newBottom;
+                        gap.LastMitigatedBarIndex = barIndex;
+                    }
+                }
+            }
+        }
+
+        private bool IsGapFilled(Gap gap)
+        {
+            if (gap.OriginalSize <= 0) return false;
+            return gap.MitigationPct >= FillThresholdPct - MitigationEpsilon;
         }
 
         private void UpdateGapFillStatus(int index)
@@ -518,7 +627,8 @@ namespace cAlgo.Indicators
                     continue;
                 }
 
-                if (!IsGapFilled(gap, index)) continue;
+                MitigateGap(gap, index);
+                if (!IsGapFilled(gap)) continue;
 
                 if (IsLastBar)
                 {
@@ -556,24 +666,26 @@ namespace cAlgo.Indicators
             foreach (var gap in ActiveGaps)
             {
                 double baseRate   = _stats.GetFillRate(gap.Type, gap.SizeInAtr);
-                double mid        = (gap.Top + gap.Bottom) / 2.0;
-                double distFactor = Math.Exp(-Math.Abs(currentPrice - mid) / (atrVal * DistanceDecay));
+                double targetMid  = gap.OriginalMid;
+                double distFactor = Math.Exp(-Math.Abs(currentPrice - targetMid) / (atrVal * DistanceDecay));
                 double ageFactor  = Math.Exp(-(double)(index - gap.CreatedBarIndex) / AgeDecay);
 
-                double directionFactor = 1.0;
-                if (gap.Direction == GapDirection.Up   && currentPrice < gap.Bottom) directionFactor = 0.7;
-                if (gap.Direction == GapDirection.Down && currentPrice > gap.Top)    directionFactor = 0.7;
+                // Already-mitigated gaps have momentum: each percent of mitigation moves
+                // the probability toward MaxProbability proportionally to MitigationBoost.
+                double mitigationFactor = 1.0 + MitigationBoost * gap.MitigationPct;
 
+                // Trend alignment: rising EMA + gap above price (or falling EMA + gap below)
+                // means the prevailing trend is dragging price toward the gap.
                 double trendFactor = 1.0;
                 if (emaValid)
                 {
                     bool emaRising = ema50Val > _ema50.Result[index - 1];
-                    bool gapAbove  = mid > currentPrice;
+                    bool gapAbove  = targetMid > currentPrice;
                     trendFactor = (emaRising == gapAbove) ? 1.15 : 0.85;
                 }
 
                 gap.HitProbability = Math.Min(MaxProbability,
-                    baseRate * distFactor * ageFactor * directionFactor * trendFactor);
+                    baseRate * distFactor * ageFactor * mitigationFactor * trendFactor);
             }
         }
 
@@ -608,11 +720,11 @@ namespace cAlgo.Indicators
             double currentPrice = Bars.ClosePrices[index];
             var    top          = ActiveGaps.OrderByDescending(g => g.HitProbability).First();
 
-            NearestGapPrice[index] = (top.Top + top.Bottom) / 2.0;
+            NearestGapPrice[index] = top.OriginalMid;
             NearestGapProb[index]  = top.HitProbability;
             NearestGapType[index]  = (int)top.Type;
-            GapsAbove[index]       = ActiveGaps.Count(g => (g.Top + g.Bottom) / 2.0 > currentPrice);
-            GapsBelow[index]       = ActiveGaps.Count(g => (g.Top + g.Bottom) / 2.0 < currentPrice);
+            GapsAbove[index]       = ActiveGaps.Count(g => g.OriginalMid > currentPrice);
+            GapsBelow[index]       = ActiveGaps.Count(g => g.OriginalMid < currentPrice);
         }
 
         #endregion
@@ -628,8 +740,7 @@ namespace cAlgo.Indicators
                 .Take(TopN)
                 .ToList();
 
-            var currentProjIds = new HashSet<string>(
-                topProjections.Select(g => $"proj_{g.Type}_{g.CreatedBarIndex}"));
+            var currentProjIds = new HashSet<string>(topProjections.Select(ProjId));
 
             foreach (var oldId in _renderedProjIds.ToList())
             {
@@ -643,7 +754,8 @@ namespace cAlgo.Indicators
 
             foreach (var gap in AllGaps)
             {
-                string boxId = $"gap_{gap.Type}_{gap.CreatedBarIndex}";
+                string boxId   = BoxId(gap);
+                string labelId = LabelId(gap);
 
                 if (gap.IsFilled && !ShowFilled)
                 {
@@ -653,10 +765,16 @@ namespace cAlgo.Indicators
                         _renderedBoxIds.Remove(boxId);
                         _boxCache.Remove(boxId);
                     }
+                    if (_renderedLabelIds.Contains(labelId))
+                    {
+                        Chart.RemoveObject(labelId);
+                        _renderedLabelIds.Remove(labelId);
+                    }
                     continue;
                 }
 
                 DrawGapBox(gap, index);
+                DrawGapLabel(gap);
             }
 
             int rank = 1;
@@ -668,41 +786,94 @@ namespace cAlgo.Indicators
         {
             if (Chart == null) return;
 
-            string boxId  = $"gap_{gap.Type}_{gap.CreatedBarIndex}";
+            string boxId  = BoxId(gap);
             int    endIdx = gap.IsFilled ? gap.FilledBarIndex : currentIndex + LiveBarBoxExtension;
             bool   filled = gap.IsFilled;
 
+            // Filled gaps render at their original outline (low-opacity "killed" trace).
+            // Active gaps shrink to the unmitigated remainder.
+            double drawTop    = filled ? gap.OriginalTop    : gap.CurrentTop;
+            double drawBottom = filled ? gap.OriginalBottom : gap.CurrentBottom;
+
             if (_boxCache.TryGetValue(boxId, out var cached)
-                && cached.endIdx == endIdx && cached.isFilled == filled)
+                && cached.EndIdx == endIdx
+                && cached.IsFilled == filled
+                && Math.Abs(cached.DrawTop - drawTop) < MitigationEpsilon
+                && Math.Abs(cached.DrawBottom - drawBottom) < MitigationEpsilon)
                 return;
 
-            _boxCache[boxId] = (endIdx, filled);
+            _boxCache[boxId] = new BoxState(endIdx, filled, drawTop, drawBottom);
 
             Color baseColor = TypeColors[gap.Type];
-            Color color     = Color.FromArgb(filled ? 40 : 80, baseColor.R, baseColor.G, baseColor.B);
+            Color color     = Color.FromArgb(filled ? 30 : 75, baseColor.R, baseColor.G, baseColor.B);
 
-            var rect = Chart.DrawRectangle(boxId, gap.CreatedBarIndex, gap.Top, endIdx, gap.Bottom, color);
+            var rect = Chart.DrawRectangle(boxId, gap.CreatedBarIndex, drawTop, endIdx, drawBottom, color);
             rect.IsFilled      = true;
             rect.IsInteractive = false;
 
             _renderedBoxIds.Add(boxId);
         }
 
+        private void DrawGapLabel(Gap gap)
+        {
+            if (Chart == null) return;
+
+            string labelId = LabelId(gap);
+
+            if (!ShowLabels)
+            {
+                if (_renderedLabelIds.Contains(labelId))
+                {
+                    Chart.RemoveObject(labelId);
+                    _renderedLabelIds.Remove(labelId);
+                }
+                return;
+            }
+
+            double anchorY = gap.IsFilled ? gap.OriginalTop : gap.CurrentTop;
+
+            string text;
+            if (gap.IsFilled)
+                text = $"{gap.Type} ✓ {gap.SizeInAtr:F1}A";
+            else
+            {
+                int mitiPct = (int)Math.Round(gap.MitigationPct * 100.0);
+                int hitPct  = (int)Math.Round(gap.HitProbability * 100.0);
+                text = mitiPct > 0
+                    ? $"{gap.Type} {hitPct}% • mit {mitiPct}%"
+                    : $"{gap.Type} {hitPct}%";
+            }
+
+            Color baseColor = TypeColors[gap.Type];
+            Color textColor = Color.FromArgb(gap.IsFilled ? 120 : 230, baseColor.R, baseColor.G, baseColor.B);
+
+            var lbl = Chart.DrawText(labelId, text, gap.CreatedBarIndex, anchorY, textColor);
+            lbl.HorizontalAlignment = HorizontalAlignment.Left;
+            lbl.VerticalAlignment   = VerticalAlignment.Top;
+            lbl.FontSize            = 9;
+            lbl.IsBold              = !gap.IsFilled;
+
+            _renderedLabelIds.Add(labelId);
+        }
+
         private void DrawProjectionLine(Gap gap, int currentIndex, int rank)
         {
             if (Chart == null) return;
 
-            string id        = $"proj_{gap.Type}_{gap.CreatedBarIndex}";
-            double mid       = (gap.Top + gap.Bottom) / 2.0;
+            string id        = ProjId(gap);
+            double targetMid = gap.OriginalMid;
             Color  lineColor = ProbabilityToColor(gap.HitProbability);
             int    endBar    = currentIndex + _projectionBars;
 
-            var line = Chart.DrawTrendLine(id, currentIndex, mid, endBar, mid, lineColor, 2, LineStyle.Solid);
+            var line = Chart.DrawTrendLine(id, currentIndex, targetMid, endBar, targetMid, lineColor, 2, LineStyle.Solid);
             line.IsInteractive    = false;
             line.ExtendToInfinity = false;
 
+            int    mitiPct  = (int)Math.Round(gap.MitigationPct * 100.0);
+            string mitiText = mitiPct > 0 ? $" • mit {mitiPct}%" : "";
+
             var text = Chart.DrawText(id + "_lbl",
-                $"#{rank} {gap.Type} {gap.HitProbability:P0}", endBar, mid, lineColor);
+                $"#{rank} {gap.Type} {gap.HitProbability:P0}{mitiText}", endBar, targetMid, lineColor);
             text.HorizontalAlignment = HorizontalAlignment.Right;
             text.VerticalAlignment   = VerticalAlignment.Center;
             text.FontSize            = 10;
@@ -728,20 +899,41 @@ namespace cAlgo.Indicators
 
     public sealed class Gap
     {
-        public GapType      Type              { get; set; }
-        public double       Top               { get; set; }
-        public double       Bottom            { get; set; }
-        public int          CreatedBarIndex   { get; set; }
-        public DateTime     CreatedTime       { get; set; }
-        public double       SizeInAtr         { get; set; }
-        public GapDirection Direction         { get; set; }
-        public bool         IsFilled          { get; set; }
-        public bool         IsFilledTentative { get; set; }
-        public bool         IsAgedOut         { get; set; }
-        public bool         IsSessionAligned  { get; set; }
-        public int          FilledBarIndex    { get; set; } = -1;
-        public double       HitProbability    { get; set; }
-        public bool         IsConfirmed       { get; set; }
+        public GapType      Type                  { get; set; }
+        public double       OriginalTop           { get; set; }
+        public double       OriginalBottom        { get; set; }
+        public double       CurrentTop            { get; set; }
+        public double       CurrentBottom         { get; set; }
+        public bool         FillsFromAbove        { get; set; }
+        public int          CreatedBarIndex       { get; set; }
+        public DateTime     CreatedTime           { get; set; }
+        public double       SizeInAtr             { get; set; }
+        public GapDirection Direction             { get; set; }
+        public bool         IsFilled              { get; set; }
+        public bool         IsFilledTentative     { get; set; }
+        public bool         IsAgedOut             { get; set; }
+        public bool         IsSessionAligned      { get; set; }
+        public int          FilledBarIndex        { get; set; } = -1;
+        public double       HitProbability        { get; set; }
+        public bool         IsConfirmed           { get; set; }
+        public int          LastMitigatedBarIndex { get; set; } = -1;
+
+        public double OriginalMid  => (OriginalTop + OriginalBottom) / 2.0;
+        public double CurrentMid   => (CurrentTop  + CurrentBottom)  / 2.0;
+        public double OriginalSize => OriginalTop - OriginalBottom;
+        public double CurrentSize  => Math.Max(0, CurrentTop - CurrentBottom);
+
+        public double MitigationPct
+        {
+            get
+            {
+                if (OriginalSize <= 0) return 0;
+                double pct = 1.0 - (CurrentSize / OriginalSize);
+                if (pct < 0) return 0;
+                if (pct > 1) return 1;
+                return pct;
+            }
+        }
     }
 
     public class FillStatistics

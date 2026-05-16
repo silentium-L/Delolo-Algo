@@ -1,0 +1,797 @@
+﻿{
+  "parameters": [
+    {
+      "name": "c02b25309272471b89a4de3831c473c5",
+      "value": "m1",
+      "parameterType": "TimeFrame",
+      "metadata": null,
+      "optimize": true,
+      "values": [
+        "m1",
+        "m2",
+        "m5",
+        "m10",
+        "m15",
+        "m30",
+        "h1"
+      ]
+    },
+    {
+      "name": "RegimeTimeFrame",
+      "value": "D1",
+      "parameterType": "TimeFrame",
+      "metadata": {
+        "defaultValue": "D1",
+        "parameterType": "TimeFrame",
+        "propertyName": "RegimeTimeFrame",
+        "friendlyName": "Regime TimeFrame",
+        "groupName": "Regime",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "values": [
+        "h1",
+        "h2",
+        "h4",
+        "h8",
+        "h12",
+        "D1",
+        "D2",
+        "W1"
+      ]
+    },
+    {
+      "name": "RegimePeriod",
+      "value": "20",
+      "parameterType": "Integer",
+      "metadata": {
+        "minValue": 2,
+        "maxValue": 2147483647,
+        "step": 1,
+        "defaultValue": 20,
+        "parameterType": "Integer",
+        "propertyName": "RegimePeriod",
+        "friendlyName": "Regime Period",
+        "groupName": "Regime",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "5",
+      "max": "100",
+      "step": "5"
+    },
+    {
+      "name": "LogRegimeSignals",
+      "value": "False",
+      "parameterType": "Boolean",
+      "metadata": {
+        "defaultValue": false,
+        "parameterType": "Boolean",
+        "propertyName": "LogRegimeSignals",
+        "friendlyName": "Log Regime Signals",
+        "groupName": "Regime",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": false
+    },
+    {
+      "name": "LogSessionSignals",
+      "value": "False",
+      "parameterType": "Boolean",
+      "metadata": {
+        "defaultValue": false,
+        "parameterType": "Boolean",
+        "propertyName": "LogSessionSignals",
+        "friendlyName": "Log Session Signals",
+        "groupName": "Session",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": false
+    },
+    {
+      "name": "RsiPeriod",
+      "value": "14",
+      "parameterType": "Integer",
+      "metadata": {
+        "minValue": 2,
+        "maxValue": 2147483647,
+        "step": 1,
+        "defaultValue": 14,
+        "parameterType": "Integer",
+        "propertyName": "RsiPeriod",
+        "friendlyName": "RSI Period",
+        "groupName": "RSI",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "10",
+      "max": "50",
+      "step": "2"
+    },
+    {
+      "name": "RsiSource",
+      "value": "Close",
+      "parameterType": "DataSeries",
+      "metadata": {
+        "defaultValue": {
+          "ownerId": "00000000-0000-0000-0000-000000000000",
+          "friendlyName": "Close",
+          "isStandard": true
+        },
+        "parameterType": "DataSeries",
+        "propertyName": "RsiSource",
+        "friendlyName": "RSI Source",
+        "groupName": "RSI",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": false
+    },
+    {
+      "name": "RsiOverbought",
+      "value": "70",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 50.0,
+        "maxValue": 100.0,
+        "step": 0.1,
+        "defaultValue": 70.0,
+        "parameterType": "Double",
+        "propertyName": "RsiOverbought",
+        "friendlyName": "RSI Overbought",
+        "groupName": "RSI",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "50",
+      "max": "100",
+      "step": "2"
+    },
+    {
+      "name": "RsiOversold",
+      "value": "30",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 0.0,
+        "maxValue": 50.0,
+        "step": 0.1,
+        "defaultValue": 30.0,
+        "parameterType": "Double",
+        "propertyName": "RsiOversold",
+        "friendlyName": "RSI Oversold",
+        "groupName": "RSI",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "0",
+      "max": "50",
+      "step": "2"
+    },
+    {
+      "name": "RsiTimeFrame2",
+      "value": "h1",
+      "parameterType": "TimeFrame",
+      "metadata": {
+        "defaultValue": "h1",
+        "parameterType": "TimeFrame",
+        "propertyName": "RsiTimeFrame2",
+        "friendlyName": "RSI TF2",
+        "groupName": "RSI",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "values": [
+        "m1",
+        "m5",
+        "m10",
+        "m15",
+        "m20",
+        "m30",
+        "m45",
+        "h1",
+        "h2",
+        "h4",
+        "h8",
+        "h12",
+        "D1",
+        "D2",
+        "W1"
+      ]
+    },
+    {
+      "name": "RsiTimeFrame3",
+      "value": "h4",
+      "parameterType": "TimeFrame",
+      "metadata": {
+        "defaultValue": "h4",
+        "parameterType": "TimeFrame",
+        "propertyName": "RsiTimeFrame3",
+        "friendlyName": "RSI TF3",
+        "groupName": "RSI",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "values": [
+        "m1",
+        "m5",
+        "m10",
+        "m15",
+        "m20",
+        "m30",
+        "m45",
+        "h1",
+        "h2",
+        "h4",
+        "h8",
+        "h12",
+        "D1",
+        "D2",
+        "W1"
+      ]
+    },
+    {
+      "name": "LogRsiSignals",
+      "value": "False",
+      "parameterType": "Boolean",
+      "metadata": {
+        "defaultValue": false,
+        "parameterType": "Boolean",
+        "propertyName": "LogRsiSignals",
+        "friendlyName": "Log RSI Signals",
+        "groupName": "RSI",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": false
+    },
+    {
+      "name": "GapLookback",
+      "value": "5000",
+      "parameterType": "Integer",
+      "metadata": {
+        "minValue": 500,
+        "maxValue": 2147483647,
+        "step": 1,
+        "defaultValue": 5000,
+        "parameterType": "Integer",
+        "propertyName": "GapLookback",
+        "friendlyName": "Gap Lookback Bars",
+        "groupName": "Gap",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "500",
+      "max": "10000",
+      "step": "500"
+    },
+    {
+      "name": "GapAtrPeriod",
+      "value": "14",
+      "parameterType": "Integer",
+      "metadata": {
+        "minValue": 5,
+        "maxValue": 2147483647,
+        "step": 1,
+        "defaultValue": 14,
+        "parameterType": "Integer",
+        "propertyName": "GapAtrPeriod",
+        "friendlyName": "Gap ATR Period",
+        "groupName": "Gap",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "5",
+      "max": "50",
+      "step": "5"
+    },
+    {
+      "name": "GapMinAtr",
+      "value": "0.08",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 0.01,
+        "maxValue": 1.7976931348623157E+308,
+        "step": 0.01,
+        "defaultValue": 0.08,
+        "parameterType": "Double",
+        "propertyName": "GapMinAtr",
+        "friendlyName": "Gap Min Size (ATR)",
+        "groupName": "Gap",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "0.01",
+      "max": "0.13",
+      "step": "0.01"
+    },
+    {
+      "name": "GapFillWindow",
+      "value": "200",
+      "parameterType": "Integer",
+      "metadata": {
+        "minValue": 10,
+        "maxValue": 2147483647,
+        "step": 1,
+        "defaultValue": 200,
+        "parameterType": "Integer",
+        "propertyName": "GapFillWindow",
+        "friendlyName": "Gap Fill Window (Bars)",
+        "groupName": "Gap",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "100",
+      "max": "500",
+      "step": "20"
+    },
+    {
+      "name": "LogGapSignals",
+      "value": "False",
+      "parameterType": "Boolean",
+      "metadata": {
+        "defaultValue": false,
+        "parameterType": "Boolean",
+        "propertyName": "LogGapSignals",
+        "friendlyName": "Log Gap Signals",
+        "groupName": "Gap",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": false
+    },
+    {
+      "name": "SweepAtrPeriod",
+      "value": "14",
+      "parameterType": "Integer",
+      "metadata": {
+        "minValue": 2,
+        "maxValue": 2147483647,
+        "step": 1,
+        "defaultValue": 14,
+        "parameterType": "Integer",
+        "propertyName": "SweepAtrPeriod",
+        "friendlyName": "Sweep ATR Period",
+        "groupName": "Sweep Setup",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "2",
+      "max": "40",
+      "step": "2"
+    },
+    {
+      "name": "SweepMinWickAtrMult",
+      "value": "0.3",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 0.0,
+        "maxValue": 3.0,
+        "step": 0.05,
+        "defaultValue": 0.3,
+        "parameterType": "Double",
+        "propertyName": "SweepMinWickAtrMult",
+        "friendlyName": "Sweep Min Wick (ATR mult)",
+        "groupName": "Sweep Setup",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "0",
+      "max": "3",
+      "step": "0.2"
+    },
+    {
+      "name": "SweepMinRsiConfluence",
+      "value": "1",
+      "parameterType": "Integer",
+      "metadata": {
+        "minValue": 0,
+        "maxValue": 3,
+        "step": 1,
+        "defaultValue": 1,
+        "parameterType": "Integer",
+        "propertyName": "SweepMinRsiConfluence",
+        "friendlyName": "Sweep Min RSI Confluence",
+        "groupName": "Sweep Setup",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "0",
+      "max": "3",
+      "step": "1"
+    },
+    {
+      "name": "LogSweepSetups",
+      "value": "False",
+      "parameterType": "Boolean",
+      "metadata": {
+        "defaultValue": true,
+        "parameterType": "Boolean",
+        "propertyName": "LogSweepSetups",
+        "friendlyName": "Log Sweep Setups",
+        "groupName": "Sweep Setup",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": false
+    },
+    {
+      "name": "RiskPercent",
+      "value": "0.5",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 0.05,
+        "maxValue": 5.0,
+        "step": 0.05,
+        "defaultValue": 0.5,
+        "parameterType": "Double",
+        "propertyName": "RiskPercent",
+        "friendlyName": "Risk per Trade (%)",
+        "groupName": "Trading",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "0.5",
+      "max": "5",
+      "step": "0.5"
+    },
+    {
+      "name": "AtrSlBufferMult",
+      "value": "0.3",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 0.0,
+        "maxValue": 3.0,
+        "step": 0.05,
+        "defaultValue": 0.3,
+        "parameterType": "Double",
+        "propertyName": "AtrSlBufferMult",
+        "friendlyName": "ATR SL Buffer (mult)",
+        "groupName": "Trading",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "0",
+      "max": "3",
+      "step": "0.05"
+    },
+    {
+      "name": "MinRrr",
+      "value": "1.5",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 0.5,
+        "maxValue": 10.0,
+        "step": 0.1,
+        "defaultValue": 1.5,
+        "parameterType": "Double",
+        "propertyName": "MinRrr",
+        "friendlyName": "Min RRR",
+        "groupName": "Trading",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "0.5",
+      "max": "10",
+      "step": "0.5"
+    },
+    {
+      "name": "AllowAtrTpFallback",
+      "value": "False",
+      "parameterType": "Boolean",
+      "metadata": {
+        "defaultValue": false,
+        "parameterType": "Boolean",
+        "propertyName": "AllowAtrTpFallback",
+        "friendlyName": "Allow ATR TP Fallback",
+        "groupName": "Trading",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true
+    },
+    {
+      "name": "TpAtrFallbackMult",
+      "value": "2",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 0.5,
+        "maxValue": 10.0,
+        "step": 0.1,
+        "defaultValue": 2.0,
+        "parameterType": "Double",
+        "propertyName": "TpAtrFallbackMult",
+        "friendlyName": "TP ATR Fallback (mult)",
+        "groupName": "Trading",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "0.5",
+      "max": "10",
+      "step": "0.1"
+    },
+    {
+      "name": "BotLabel",
+      "value": "GapStar",
+      "parameterType": "String",
+      "metadata": {
+        "defaultValue": "GapStar",
+        "parameterType": "String",
+        "propertyName": "BotLabel",
+        "friendlyName": "Bot Label",
+        "groupName": "Trading",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": false
+    },
+    {
+      "name": "BeTriggerR",
+      "value": "1",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 0.0,
+        "maxValue": 5.0,
+        "step": 0.1,
+        "defaultValue": 1.0,
+        "parameterType": "Double",
+        "propertyName": "BeTriggerR",
+        "friendlyName": "BE Trigger (R)",
+        "groupName": "Trade Management",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "0",
+      "max": "5",
+      "step": "0.5"
+    },
+    {
+      "name": "ChandelierAtrMult",
+      "value": "3",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 0.0,
+        "maxValue": 20.0,
+        "step": 0.1,
+        "defaultValue": 3.0,
+        "parameterType": "Double",
+        "propertyName": "ChandelierAtrMult",
+        "friendlyName": "Chandelier ATR (mult, 0=off)",
+        "groupName": "Trade Management",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "0",
+      "max": "20",
+      "step": "1"
+    },
+    {
+      "name": "MaxHoldBars",
+      "value": "50",
+      "parameterType": "Integer",
+      "metadata": {
+        "minValue": 0,
+        "maxValue": 5000,
+        "step": 1,
+        "defaultValue": 50,
+        "parameterType": "Integer",
+        "propertyName": "MaxHoldBars",
+        "friendlyName": "Max Hold Bars (0=off)",
+        "groupName": "Trade Management",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "0",
+      "max": "5000",
+      "step": "100"
+    },
+    {
+      "name": "ReentryCooldownBars",
+      "value": "5",
+      "parameterType": "Integer",
+      "metadata": {
+        "minValue": 0,
+        "maxValue": 1000,
+        "step": 1,
+        "defaultValue": 5,
+        "parameterType": "Integer",
+        "propertyName": "ReentryCooldownBars",
+        "friendlyName": "Reentry Cooldown Bars",
+        "groupName": "Trade Management",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "0",
+      "max": "100",
+      "step": "5"
+    },
+    {
+      "name": "DailyLossCapPct",
+      "value": "2",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 0.0,
+        "maxValue": 50.0,
+        "step": 0.1,
+        "defaultValue": 2.0,
+        "parameterType": "Double",
+        "propertyName": "DailyLossCapPct",
+        "friendlyName": "Daily Loss Cap (%, 0=off)",
+        "groupName": "Risk Caps",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "0",
+      "max": "10",
+      "step": "1"
+    },
+    {
+      "name": "WeeklyLossCapPct",
+      "value": "0",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 0.0,
+        "maxValue": 50.0,
+        "step": 0.1,
+        "defaultValue": 0.0,
+        "parameterType": "Double",
+        "propertyName": "WeeklyLossCapPct",
+        "friendlyName": "Weekly Loss Cap (%, 0=off)",
+        "groupName": "Risk Caps",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": true,
+      "min": "0",
+      "max": "50",
+      "step": "10"
+    },
+    {
+      "name": "FloatingDdCapPct",
+      "value": "0.2",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 0.0,
+        "maxValue": 50.0,
+        "step": 0.1,
+        "defaultValue": 5.0,
+        "parameterType": "Double",
+        "propertyName": "FloatingDdCapPct",
+        "friendlyName": "Floating DD Cap (%, 0=off)",
+        "groupName": "Risk Caps",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": false,
+      "min": "0",
+      "max": "50",
+      "step": "0.1"
+    },
+    {
+      "name": "HardLossCapPct",
+      "value": "0",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 0.0,
+        "maxValue": 90.0,
+        "step": 0.1,
+        "defaultValue": 10.0,
+        "parameterType": "Double",
+        "propertyName": "HardLossCapPct",
+        "friendlyName": "Hard Loss Cap (%, 0=off)",
+        "groupName": "Risk Caps",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": false,
+      "min": "0",
+      "max": "90",
+      "step": "0.1"
+    },
+    {
+      "name": "EquityTrailPct",
+      "value": "0",
+      "parameterType": "Double",
+      "metadata": {
+        "minValue": 0.0,
+        "maxValue": 50.0,
+        "step": 0.1,
+        "defaultValue": 0.0,
+        "parameterType": "Double",
+        "propertyName": "EquityTrailPct",
+        "friendlyName": "Equity Trail (%, 0=off)",
+        "groupName": "Risk Caps",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": false,
+      "min": "0",
+      "max": "50",
+      "step": "0.1"
+    },
+    {
+      "name": "TradeSessionsCsv",
+      "value": "1,2,3",
+      "parameterType": "String",
+      "metadata": {
+        "defaultValue": "1,2,3",
+        "parameterType": "String",
+        "propertyName": "TradeSessionsCsv",
+        "friendlyName": "Trade Sessions (CSV: 1=HK,2=LON,3=NY)",
+        "groupName": "Risk Caps",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": false
+    },
+    {
+      "name": "EnableTradeLogCsv",
+      "value": "False",
+      "parameterType": "Boolean",
+      "metadata": {
+        "defaultValue": false,
+        "parameterType": "Boolean",
+        "propertyName": "EnableTradeLogCsv",
+        "friendlyName": "Enable Trade Log CSV",
+        "groupName": "Logging",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": false
+    },
+    {
+      "name": "LogTrades",
+      "value": "True",
+      "parameterType": "Boolean",
+      "metadata": {
+        "defaultValue": true,
+        "parameterType": "Boolean",
+        "propertyName": "LogTrades",
+        "friendlyName": "Log Trades",
+        "groupName": "Logging",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": false
+    },
+    {
+      "name": "LogRiskCaps",
+      "value": "True",
+      "parameterType": "Boolean",
+      "metadata": {
+        "defaultValue": true,
+        "parameterType": "Boolean",
+        "propertyName": "LogRiskCaps",
+        "friendlyName": "Log Risk Caps",
+        "groupName": "Logging",
+        "isValueVisibleInTitle": true,
+        "description": ""
+      },
+      "optimize": false
+    }
+  ]
+}

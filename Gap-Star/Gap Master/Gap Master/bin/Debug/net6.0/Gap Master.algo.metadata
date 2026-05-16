@@ -1,0 +1,397 @@
+[
+  {
+    "Flags": "Indicator",
+    "Guid": "00000000-0000-0000-0000-000000000000",
+    "Group": "Custom",
+    "FriendlyName": "GapRadar",
+    "ShortName": null,
+    "TypeName": "cAlgo.Indicators.GapRadar",
+    "AssemblyName": "Gap Master, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null",
+    "TimeZone": "UTC",
+    "IsOverlay": true,
+    "IsPercentage": false,
+    "ScalePrecision": null,
+    "Levels": [],
+    "DefaultSymbolName": null,
+    "DefaultTimeFrame": null,
+    "Video": null,
+    "Lines": [
+      {
+        "Name": "Nearest Gap Price",
+        "Style": "Solid",
+        "PlotType": "Line",
+        "Thickness": 1.0,
+        "Color": "#FFFFFF00",
+        "PropertyName": "NearestGapPrice",
+        "IsUsedInAutoScale": false,
+        "IsColorCustomizable": true,
+        "IsLastValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "Name": "Nearest Gap Probability",
+        "Style": "Solid",
+        "PlotType": "Line",
+        "Thickness": 1.0,
+        "Color": "#FFFFFF00",
+        "PropertyName": "NearestGapProb",
+        "IsUsedInAutoScale": false,
+        "IsColorCustomizable": true,
+        "IsLastValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "Name": "Nearest Gap Type",
+        "Style": "Solid",
+        "PlotType": "Line",
+        "Thickness": 1.0,
+        "Color": "#FFFFFF00",
+        "PropertyName": "NearestGapType",
+        "IsUsedInAutoScale": false,
+        "IsColorCustomizable": true,
+        "IsLastValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "Name": "Active Gaps Above",
+        "Style": "Solid",
+        "PlotType": "Line",
+        "Thickness": 1.0,
+        "Color": "#FFFFFF00",
+        "PropertyName": "GapsAbove",
+        "IsUsedInAutoScale": false,
+        "IsColorCustomizable": true,
+        "IsLastValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "Name": "Active Gaps Below",
+        "Style": "Solid",
+        "PlotType": "Line",
+        "Thickness": 1.0,
+        "Color": "#FFFFFF00",
+        "PropertyName": "GapsBelow",
+        "IsUsedInAutoScale": false,
+        "IsColorCustomizable": true,
+        "IsLastValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "Name": "Is Confirmed",
+        "Style": "Solid",
+        "PlotType": "Line",
+        "Thickness": 1.0,
+        "Color": "#FFFFFF00",
+        "PropertyName": "IsConfirmedSignal",
+        "IsUsedInAutoScale": false,
+        "IsColorCustomizable": true,
+        "IsLastValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "Name": "Nearest FVG Above",
+        "Style": "Solid",
+        "PlotType": "Line",
+        "Thickness": 1.0,
+        "Color": "#FFFFFF00",
+        "PropertyName": "NearestFvgAbove",
+        "IsUsedInAutoScale": false,
+        "IsColorCustomizable": true,
+        "IsLastValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "Name": "Nearest FVG Below",
+        "Style": "Solid",
+        "PlotType": "Line",
+        "Thickness": 1.0,
+        "Color": "#FFFFFF00",
+        "PropertyName": "NearestFvgBelow",
+        "IsUsedInAutoScale": false,
+        "IsColorCustomizable": true,
+        "IsLastValueVisibleInTitle": true,
+        "Description": ""
+      }
+    ],
+    "Clouds": [],
+    "Parameters": [
+      {
+        "MinValue": 500,
+        "MaxValue": 2147483647,
+        "Step": 1,
+        "DefaultValue": 5000,
+        "ParameterType": "Integer",
+        "PropertyName": "Lookback",
+        "FriendlyName": "Lookback Bars",
+        "GroupName": "General",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 5,
+        "MaxValue": 2147483647,
+        "Step": 1,
+        "DefaultValue": 14,
+        "ParameterType": "Integer",
+        "PropertyName": "AtrPeriod",
+        "FriendlyName": "ATR Period",
+        "GroupName": "General",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "EnumValues": {
+          "Simple": 0,
+          "Exponential": 1,
+          "TimeSeries": 2,
+          "Triangular": 3,
+          "VIDYA": 4,
+          "Weighted": 5,
+          "WilderSmoothing": 6,
+          "Hull": 7,
+          "DoubleExponential": 8,
+          "TripleExponential": 9,
+          "KaufmanAdaptive": 10
+        },
+        "DefaultValue": 0,
+        "ParameterType": "Enum",
+        "PropertyName": "AtrType",
+        "FriendlyName": "ATR Type",
+        "GroupName": "General",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 0.01,
+        "MaxValue": 1.7976931348623157E+308,
+        "Step": 0.01,
+        "DefaultValue": 0.08,
+        "ParameterType": "Double",
+        "PropertyName": "MinGapAtr",
+        "FriendlyName": "Min Gap Size (ATR mult)",
+        "GroupName": "General",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 10,
+        "MaxValue": 2147483647,
+        "Step": 1,
+        "DefaultValue": 200,
+        "ParameterType": "Integer",
+        "PropertyName": "FillWindow",
+        "FriendlyName": "Fill Window (Bars)",
+        "GroupName": "General",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 0.1,
+        "MaxValue": 1.0,
+        "Step": 0.05,
+        "DefaultValue": 0.5,
+        "ParameterType": "Double",
+        "PropertyName": "FillThresholdPct",
+        "FriendlyName": "Fill Threshold (Mitigation %)",
+        "GroupName": "General",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 1,
+        "MaxValue": 10,
+        "Step": 1,
+        "DefaultValue": 3,
+        "ParameterType": "Integer",
+        "PropertyName": "TopN",
+        "FriendlyName": "Top N Projections",
+        "GroupName": "Display",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": true,
+        "ParameterType": "Boolean",
+        "PropertyName": "ShowFilled",
+        "FriendlyName": "Show Filled Gaps",
+        "GroupName": "Display",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": true,
+        "ParameterType": "Boolean",
+        "PropertyName": "ShowLabels",
+        "FriendlyName": "Show Gap Labels",
+        "GroupName": "Display",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": true,
+        "ParameterType": "Boolean",
+        "PropertyName": "ShowWeekend",
+        "FriendlyName": "Show Weekend Gaps",
+        "GroupName": "Gap Types",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": true,
+        "ParameterType": "Boolean",
+        "PropertyName": "ShowSession",
+        "FriendlyName": "Show Session Gaps",
+        "GroupName": "Gap Types",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": true,
+        "ParameterType": "Boolean",
+        "PropertyName": "ShowNews",
+        "FriendlyName": "Show News Gaps",
+        "GroupName": "Gap Types",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": true,
+        "ParameterType": "Boolean",
+        "PropertyName": "ShowFvg",
+        "FriendlyName": "Show FVG",
+        "GroupName": "Gap Types",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": true,
+        "ParameterType": "Boolean",
+        "PropertyName": "ShowLiquidity",
+        "FriendlyName": "Show Liquidity Gaps",
+        "GroupName": "Gap Types",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 0.5,
+        "MaxValue": 1.7976931348623157E+308,
+        "Step": 0.1,
+        "DefaultValue": 1.8,
+        "ParameterType": "Double",
+        "PropertyName": "NewsGapAtr",
+        "FriendlyName": "News Gap Trigger (ATR mult)",
+        "GroupName": "Detection",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 0,
+        "MaxValue": 23,
+        "Step": 1,
+        "DefaultValue": 0,
+        "ParameterType": "Integer",
+        "PropertyName": "SessionHour1",
+        "FriendlyName": "Session Hour 1 (UTC)",
+        "GroupName": "Session",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 0,
+        "MaxValue": 23,
+        "Step": 1,
+        "DefaultValue": 7,
+        "ParameterType": "Integer",
+        "PropertyName": "SessionHour2",
+        "FriendlyName": "Session Hour 2 (UTC)",
+        "GroupName": "Session",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 0,
+        "MaxValue": 23,
+        "Step": 1,
+        "DefaultValue": 13,
+        "ParameterType": "Integer",
+        "PropertyName": "SessionHour3",
+        "FriendlyName": "Session Hour 3 (UTC)",
+        "GroupName": "Session",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "DefaultValue": "",
+        "ParameterType": "String",
+        "PropertyName": "CustomSessionHours",
+        "FriendlyName": "Custom Session Hours (CSV UTC)",
+        "GroupName": "Session",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 1.0,
+        "MaxValue": 1.7976931348623157E+308,
+        "Step": 0.5,
+        "DefaultValue": 5.0,
+        "ParameterType": "Double",
+        "PropertyName": "DistanceDecay",
+        "FriendlyName": "Distance Decay (ATR)",
+        "GroupName": "Probability",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 50,
+        "MaxValue": 2147483647,
+        "Step": 1,
+        "DefaultValue": 500,
+        "ParameterType": "Integer",
+        "PropertyName": "AgeDecay",
+        "FriendlyName": "Age Decay (Bars)",
+        "GroupName": "Probability",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      },
+      {
+        "MinValue": 0.0,
+        "MaxValue": 1.5,
+        "Step": 0.1,
+        "DefaultValue": 0.5,
+        "ParameterType": "Double",
+        "PropertyName": "MitigationBoost",
+        "FriendlyName": "Mitigation Boost",
+        "GroupName": "Probability",
+        "IsValueVisibleInTitle": true,
+        "Description": ""
+      }
+    ],
+    "Capabilities": [],
+    "CustomAttributes": [
+      {
+        "TypeFullName": "System.Runtime.CompilerServices.NullableContextAttribute",
+        "CtorArguments": [
+          {
+            "TypeFullName": "System.Byte",
+            "Value": 1
+          }
+        ],
+        "NamedArguments": []
+      },
+      {
+        "TypeFullName": "System.Runtime.CompilerServices.NullableAttribute",
+        "CtorArguments": [
+          {
+            "TypeFullName": "System.Byte",
+            "Value": 0
+          }
+        ],
+        "NamedArguments": []
+      }
+    ],
+    "Sets": [],
+    "AddIndicatorsToChart": false,
+    "AdditionalInfoUrl": null,
+    "Bars": []
+  }
+]
